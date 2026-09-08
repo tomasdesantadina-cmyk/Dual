@@ -65,7 +65,17 @@ struct LastTakeSheet: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(.red)
-                        .disabled(model.phase == .saving)
+                        .disabled(model.phase != .idle)
+
+                        Button(role: .destructive) {
+                            model.discardPendingTake()
+                        } label: {
+                            Label("Discard these clips", systemImage: "trash")
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(model.phase != .idle)
                     }
 
                     Button {

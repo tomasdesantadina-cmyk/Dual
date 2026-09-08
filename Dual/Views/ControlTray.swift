@@ -15,7 +15,7 @@ struct ControlTray: View {
                 Chip(title: model.zoomLabel, systemImage: "plus.magnifyingglass", isEnabled: model.isSessionReady) {
                     model.cycleZoomPreset()
                 }
-                Chip(title: model.settings.pair.label, systemImage: "aspectratio", isEnabled: !model.isRecording && model.isSessionReady) {
+                Chip(title: model.settings.pair.label, systemImage: "aspectratio", isEnabled: model.phase == .idle && model.isSessionReady) {
                     model.cycleFormatPair()
                 }
                 Chip(title: "Filter",
@@ -34,12 +34,12 @@ struct ControlTray: View {
                             model.toggleLayout()
                         }
                         RoundIconButton(systemImage: "arrow.triangle.2.circlepath.camera",
-                                        isEnabled: !model.isRecording && model.isSessionReady) {
+                                        isEnabled: model.phase == .idle && model.isSessionReady) {
                             model.flipCamera()
                         }
                     }
                 }
-                RecordButton(isRecording: model.isRecording, isEnabled: model.isSessionReady && model.phase != .saving) {
+                RecordButton(isRecording: model.isCapturing, isEnabled: model.isSessionReady && model.phase != .saving) {
                     model.toggleRecording()
                 }
             }

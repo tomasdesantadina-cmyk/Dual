@@ -52,6 +52,8 @@ final class CameraModel {
     var pressureWarning: String?
 
     var isRecording: Bool { phase == .recording }
+    /// A take is in flight: the writers are being created or frames are being written.
+    var isCapturing: Bool { phase == .recording || phase == .starting }
     var isBusy: Bool { phase == .saving || !isSessionReady }
     var selectedFilter: VideoFilterPreset { settings.filter }
 
@@ -117,10 +119,19 @@ final class CameraModel {
     }
 
     /// Clips left on disk by an earlier run (a failed Photos save, or a take cut
-    /// short by a crash) are offered for saving instead of being deleted.
+    /// short by a crash) are offered for saving instead of being deleted. Files
+    /// that cannot be played (an unfinished fragment) are removed.
     private func recoverOrphanedTake() async {
         guard lastTake == nil else { return }
-        let files = TakeStorage.existingTakeFiles()
+        var files: [URL] = []
+        for url in TakeStorage.existingTakeFiles() {
+            let playable = (try? await AVURLAsset(url: url).load(.isPlayable)) ?? false
+            if playable {
+                files.append(url)
+            } else {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
         guard let first = files.first else { return }
         let thumbnail = await ThumbnailMaker.thumbnail(for: first)
         let duration = await ThumbnailMaker.duration(of: first)
@@ -136,9 +147,11 @@ final class CameraModel {
     private func thermalStateChanged() {
         switch ProcessInfo.processInfo.thermalState {
         case .critical:
-            interruptionMessage = "The phone is too hot. Recording was stopped to protect it."
-            if phase == .recording {
+            if isCapturing {
+                interruptionMessage = "The phone is too hot. Recording was stopped to protect it."
                 engine.stopRecording()
+            } else {
+                interruptionMessage = "The phone is too hot. Let it cool down before recording."
             }
         case .serious:
             interruptionMessage = "The phone is getting hot. Consider a short break."
@@ -474,15 +487,30 @@ final class CameraModel {
                                 pendingURLs: [])
         } catch {
             let remaining = take.pendingURLs.filter { FileManager.default.fileExists(atPath: $0.path) }
-            lastTake = LastTake(outputs: take.outputs,
-                                thumbnail: take.thumbnail,
-                                date: take.date,
-                                duration: take.duration,
-                                savedToPhotos: remaining.isEmpty,
-                                pendingURLs: remaining)
+            if remaining.isEmpty {
+                // Nothing left on disk to retry: the take is gone, do not describe it as saved.
+                lastTake = nil
+            } else {
+                lastTake = LastTake(outputs: take.outputs,
+                                    thumbnail: take.thumbnail,
+                                    date: take.date,
+                                    duration: take.duration,
+                                    savedToPhotos: false,
+                                    pendingURLs: remaining)
+            }
             alert = AlertMessage(title: "Could not save to Photos", message: error.localizedDescription)
         }
         phase = .idle
         endBackgroundTask()
+    }
+
+    /// Deletes the clips of a take whose Photos save failed.
+    func discardPendingTake() {
+        guard let take = lastTake, !take.pendingURLs.isEmpty, phase == .idle else { return }
+        for url in take.pendingURLs {
+            try? FileManager.default.removeItem(at: url)
+        }
+        lastTake = nil
+        isShowingLastTake = false
     }
 }

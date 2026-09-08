@@ -5,9 +5,9 @@ struct TopBar: View {
 
     var body: some View {
         ZStack {
-            TimerPill(text: model.elapsedText, isRecording: model.isRecording)
+            TimerPill(text: model.elapsedText, isRecording: model.isCapturing)
             HStack {
-                if model.isRecording {
+                if model.isCapturing {
                     RoundIconButton(systemImage: "xmark") {
                         model.isConfirmingDiscard = true
                     }
