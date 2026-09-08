@@ -33,5 +33,6 @@ struct TopBar: View {
         }
         .padding(.horizontal, 16)
         .frame(height: 52)
+        .animation(.easeInOut(duration: 0.2), value: model.isCapturing)
     }
 }

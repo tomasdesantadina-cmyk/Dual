@@ -180,6 +180,7 @@ final class CameraModel {
             }
             engine.stop()
             isSessionReady = false
+            isCameraControlFullscreen = false
         default:
             break
         }
@@ -246,6 +247,7 @@ final class CameraModel {
     func flipCamera() {
         guard phase == .idle, isSessionReady else { return }
         isSessionReady = false
+        isCameraControlFullscreen = false
         isFrontCamera.toggle()
         engine.switchCamera()
     }
@@ -347,6 +349,7 @@ final class CameraModel {
         store.save(accepted)
         if formatChanged {
             isSessionReady = false
+            isCameraControlFullscreen = false
         }
         engine.apply(accepted)
     }
@@ -371,9 +374,6 @@ final class CameraModel {
 
         case .planChanged(let newPlan):
             plan = newPlan
-
-        case .transformChanged(let newTransform):
-            transform = newTransform
 
         case .zoomChanged(let zoom):
             // While the user pinches, the model already holds the newest value;

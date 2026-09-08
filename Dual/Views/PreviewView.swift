@@ -47,19 +47,6 @@ final class PreviewHostView: UIView {
             setNeedsLayout()
         }
         target = newTarget
-        if window != nil {
-            newTarget.hostIsOnScreen = true
-            newTarget.onScreenChanged?(true)
-        }
-    }
-
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        // A stale host that no longer shows the layer must not report for it.
-        guard let target, target.layer.superlayer === layer else { return }
-        let onScreen = window != nil
-        target.hostIsOnScreen = onScreen
-        target.onScreenChanged?(onScreen)
     }
 
     override func layoutSubviews() {

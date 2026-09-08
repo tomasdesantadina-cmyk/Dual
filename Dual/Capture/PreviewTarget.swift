@@ -11,12 +11,6 @@ final class PreviewTarget {
 
     let layer: AVSampleBufferDisplayLayer
 
-    /// Main thread. True while the hosting view is inside a window. The rotation
-    /// coordinator's preview angle is only meaningful for an on-screen layer.
-    var hostIsOnScreen = false
-    /// Main thread. Called by the host view when it enters or leaves a window.
-    var onScreenChanged: ((Bool) -> Void)?
-
     init() {
         layer = AVSampleBufferDisplayLayer()
         layer.videoGravity = .resizeAspectFill

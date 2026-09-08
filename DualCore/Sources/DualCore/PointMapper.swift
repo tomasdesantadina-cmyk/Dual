@@ -33,6 +33,18 @@ public struct UprightTransform: Hashable, Codable, Sendable, CustomStringConvert
     /// Front camera held in portrait, mirrored, on iPhones up to the 16 family.
     public static let rotateClockwiseMirrored = UprightTransform(rotationDegrees: 90, mirrored: true)
 
+    /// The rotation that makes a sensor's frames upright for a portrait-locked UI,
+    /// decided by how the sensor is mounted rather than by how the phone is held.
+    ///
+    /// Every iPhone rear camera, and every front camera before the iPhone 17 family,
+    /// is mounted in landscape and reports landscape buffers, so a quarter turn
+    /// clockwise makes them upright. The iPhone 17 Center Stage front camera is
+    /// mounted in portrait and reports square (or portrait) buffers, which are
+    /// already upright.
+    public static func forSensor(_ sensorSize: PixelSize, mirrored: Bool) -> UprightTransform {
+        UprightTransform(rotationDegrees: sensorSize.width > sensorSize.height ? 90 : 0, mirrored: mirrored)
+    }
+
     /// Whether the upright frame has swapped width and height relative to the raw frame.
     public var swapsDimensions: Bool { rotationDegrees == 90 || rotationDegrees == 270 }
 

@@ -84,6 +84,28 @@ final class PointMapperTests: XCTestCase {
         }
     }
 
+    func testTransformForSensorMounting() {
+        // Landscape-mounted: every iPhone rear camera, and front cameras before iPhone 17.
+        let landscape = UprightTransform.forSensor(PixelSize(width: 2592, height: 1944), mirrored: false)
+        XCTAssertEqual(landscape.rotationDegrees, 90)
+        XCTAssertTrue(landscape.swapsDimensions)
+        XCTAssertEqual(landscape, .rotateClockwise)
+
+        // Portrait-mounted square sensor: the iPhone 17 Center Stage front camera.
+        let square = UprightTransform.forSensor(PixelSize(width: 3024, height: 3024), mirrored: true)
+        XCTAssertEqual(square.rotationDegrees, 0)
+        XCTAssertFalse(square.swapsDimensions)
+        XCTAssertTrue(square.mirrored)
+
+        // A portrait-shaped buffer is already upright too.
+        let tall = UprightTransform.forSensor(PixelSize(width: 3024, height: 4032), mirrored: false)
+        XCTAssertEqual(tall.rotationDegrees, 0)
+
+        // Mirroring is carried through without affecting the rotation.
+        XCTAssertEqual(UprightTransform.forSensor(PixelSize(width: 1920, height: 1080), mirrored: true),
+                       .rotateClockwiseMirrored)
+    }
+
     func testTransformNormalisation() {
         XCTAssertEqual(UprightTransform(rotationDegrees: 450, mirrored: false).rotationDegrees, 90)
         XCTAssertEqual(UprightTransform(rotationDegrees: -90, mirrored: false).rotationDegrees, 270)

@@ -30,7 +30,6 @@ final class CaptureEngine: NSObject {
     enum Event {
         case configured(Configuration)
         case planChanged(FramingPlan)
-        case transformChanged(UprightTransform)
         case zoomChanged(Double)
         case torchChanged(Bool)
         case exposureFocusLockChanged(Bool)
@@ -76,7 +75,7 @@ final class CaptureEngine: NSObject {
     ]
     /// The iPhone 17 family's square Center Stage front camera is exposed as an
     /// ultra-wide device, earlier phones as a wide-angle one.
-    static let frontCameraTypes: [AVCaptureDevice.DeviceType] = [.builtInWideAngleCamera, .builtInUltraWideCamera]
+    static let frontCameraTypes: [AVCaptureDevice.DeviceType] = [.builtInUltraWideCamera, .builtInWideAngleCamera]
     static let stabilizationMode: AVCaptureVideoStabilizationMode = .standard
 
     // MARK: - Public surface
@@ -117,15 +116,13 @@ final class CaptureEngine: NSObject {
     /// The Camera Control filter picker (AVCaptureIndexPicker on iOS 18+), kept untyped
     /// so the property itself needs no availability annotation.
     private var filterControl: AnyObject?
-    /// Clockwise degrees that make raw frames upright in the portrait UI. Defaults
-    /// to 90 (correct for every iPhone up to the 16 family) and is refined by the
-    /// rotation coordinator once the preview layer is on screen.
+    /// Clockwise degrees that make raw frames upright in this portrait-locked UI.
+    /// Derived from how the active sensor is mounted, never from how the phone is
+    /// held, so the framing stays fixed the way the two preview panes show it.
     private var uprightRotationDegrees = 90
 
     // MARK: - State owned by the main queue
 
-    private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
-    private var rotationObservation: NSKeyValueObservation?
     private var pressureObservation: NSKeyValueObservation?
     private var zoomObservation: NSKeyValueObservation?
 
@@ -262,7 +259,8 @@ final class CaptureEngine: NSObject {
                     device.videoZoomFactor = target
                 }
                 device.unlockForConfiguration()
-                self.emit(.zoomChanged(Double(target)))
+                // No emit here: the videoZoomFactor observer reports the real value,
+                // including every step of an animated ramp.
             } catch {
                 self.emit(.failed("Zoom is unavailable right now."))
             }
@@ -563,21 +561,31 @@ final class CaptureEngine: NSObject {
                                           pixelFormat: CaptureEngine.fourCharCodeString(subtype))
         }
 
-        var requirements = settings.formatRequirements
-        requirements.uprightSwapsDimensions = UprightTransform(rotationDegrees: uprightRotationDegrees, mirrored: false).swapsDimensions
-        var chosen = CaptureFormatSelector.select(from: candidates, requirements: requirements)
+        // Sensor mounting decides the upright rotation, and that in turn decides
+        // whether an upright frame is the sensor transposed. Both come from the
+        // candidate list, so they are settled before scoring.
+        let swapsDimensions = candidates.first.map { UprightTransform.forSensor($0.sensorSize, mirrored: false).swapsDimensions } ?? true
+
+        func requirements(quality: VideoQuality, frameRate: Double) -> CaptureFormatRequirements {
+            var value = CaptureFormatRequirements(targetFrameRate: frameRate, quality: quality, pair: settings.pair)
+            value.uprightSwapsDimensions = swapsDimensions
+            return value
+        }
+
+        var chosen = CaptureFormatSelector.select(from: candidates, requirements: requirements(quality: settings.quality, frameRate: Double(settings.frameRate)))
         if chosen == nil {
-            requirements.targetFrameRate = 30
-            chosen = CaptureFormatSelector.select(from: candidates, requirements: requirements)
+            chosen = CaptureFormatSelector.select(from: candidates, requirements: requirements(quality: settings.quality, frameRate: 30))
         }
         if chosen == nil {
-            requirements.quality = .hd1080
-            chosen = CaptureFormatSelector.select(from: candidates, requirements: requirements)
+            chosen = CaptureFormatSelector.select(from: candidates, requirements: requirements(quality: .hd1080, frameRate: 30))
         }
         if chosen == nil {
-            requirements.allowedPixelFormats = Set(candidates.map { $0.pixelFormat })
-            requirements.maxLongSide = Int.max
-            chosen = CaptureFormatSelector.select(from: candidates, requirements: requirements)
+            // Apple gives no format guarantees, so drop every filter but the frame rate.
+            var relaxed = requirements(quality: .hd1080, frameRate: 30)
+            relaxed.allowedPixelFormats = Set(candidates.map { $0.pixelFormat })
+            relaxed.maxLongSide = Int.max
+            relaxed.softMaxPixels = Int.max
+            chosen = CaptureFormatSelector.select(from: candidates, requirements: relaxed)
         }
         if chosen == nil, let activeIndex = device.formats.firstIndex(of: device.activeFormat),
            candidates.indices.contains(activeIndex) {
@@ -589,18 +597,27 @@ final class CaptureEngine: NSObject {
         }
         let format = device.formats[chosen.index]
 
+        uprightRotationDegrees = UprightTransform.forSensor(chosen.sensorSize, mirrored: false).rotationDegrees
+
         try device.lockForConfiguration()
         defer { device.unlockForConfiguration() }
 
-        device.activeFormat = format
-        if format.supportedColorSpaces.contains(.sRGB) {
-            device.activeColorSpace = .sRGB
-        }
-        // HDR video is the default on recent iPhones. The pipeline renders 8-bit
-        // BGRA, so keep the camera out of 10-bit HLG rather than tone-map twice.
-        if format.isVideoHDRSupported {
-            device.automaticallyAdjustsVideoHDREnabled = false
-            device.isVideoHDREnabled = false
+        // Re-assigning the active format tears down and rebuilds the stream, so skip
+        // it when the device already runs this format.
+        let formatIsNew = device.activeFormat != format
+        let previousZoom = Double(device.videoZoomFactor)
+
+        if formatIsNew {
+            device.activeFormat = format
+            if format.supportedColorSpaces.contains(.sRGB) {
+                device.activeColorSpace = .sRGB
+            }
+            // HDR video is the default on recent iPhones. The pipeline renders 8-bit
+            // BGRA, so keep the camera out of 10-bit HLG rather than tone-map twice.
+            if format.isVideoHDRSupported {
+                device.automaticallyAdjustsVideoHDREnabled = false
+                device.isVideoHDREnabled = false
+            }
         }
 
         // Frame durations reset when the format changes, so set them afterwards and
@@ -614,11 +631,22 @@ final class CaptureEngine: NSObject {
             device.activeVideoMaxFrameDuration = duration
         }
 
-        if device.isFocusModeSupported(.continuousAutoFocus) {
-            device.focusMode = .continuousAutoFocus
-        }
-        if device.isExposureModeSupported(.continuousAutoExposure) {
-            device.exposureMode = .continuousAutoExposure
+        // Focus and exposure modes reset with the format; honour an AE/AF lock the
+        // user set rather than silently returning to continuous.
+        if isExposureFocusLocked {
+            if device.isFocusModeSupported(.locked) {
+                device.focusMode = .locked
+            }
+            if device.isExposureModeSupported(.locked) {
+                device.exposureMode = .locked
+            }
+        } else {
+            if device.isFocusModeSupported(.continuousAutoFocus) {
+                device.focusMode = .continuousAutoFocus
+            }
+            if device.isExposureModeSupported(.continuousAutoExposure) {
+                device.exposureMode = .continuousAutoExposure
+            }
         }
         if device.isSmoothAutoFocusSupported {
             device.isSmoothAutoFocusEnabled = true
@@ -629,7 +657,10 @@ final class CaptureEngine: NSObject {
                               maxZoom: Double(device.maxAvailableVideoZoomFactor),
                               switchOverFactors: device.virtualDeviceSwitchOverVideoZoomFactors.map { $0.doubleValue },
                               hasUltraWide: hasUltraWide)
-        device.videoZoomFactor = CGFloat(zoomModel.clamped(zoomModel.wideFactor))
+        // Setting a format can reset the zoom, so restore what the user had; a fresh
+        // device starts at the wide lens.
+        let restoredZoom = previousZoom > 0 ? previousZoom : zoomModel.wideFactor
+        device.videoZoomFactor = CGFloat(zoomModel.clamped(restoredZoom))
 
         let plan = makeFormatPlan(for: chosen)
         formatPlan = plan
@@ -641,10 +672,10 @@ final class CaptureEngine: NSObject {
         }
     }
 
-    /// The plan for a format's frames once they are upright. 90/270 degree
-    /// rotations swap the sensor's width and height; 0/180 keep them.
+    /// The plan for a format's frames once they are upright. A landscape-mounted
+    /// sensor is transposed by the quarter turn; a portrait-mounted one is not.
     private func makeFormatPlan(for candidate: CaptureFormatCandidate) -> FramingPlan {
-        let swaps = UprightTransform(rotationDegrees: uprightRotationDegrees, mirrored: false).swapsDimensions
+        let swaps = UprightTransform.forSensor(candidate.sensorSize, mirrored: false).swapsDimensions
         let sourceSize = swaps ? candidate.portraitSize : candidate.sensorSize
         return FramingPlanner.plan(sourceSize: sourceSize, pair: settings.pair, quality: settings.quality)
     }
@@ -687,29 +718,11 @@ final class CaptureEngine: NSObject {
         }
     }
 
-    /// Installs the rotation coordinator and the system-pressure observer for a
-    /// device. Both are created and observed on the main queue.
+    /// Installs the device observers. KVO is set up on the main queue, which is
+    /// where the callbacks arrive.
     private func installObservers(for device: AVCaptureDevice) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-
-            // Rotation: ask AVFoundation how raw frames must be rotated to look
-            // upright in this portrait UI. The answer depends on how the sensor is
-            // mounted (the front camera on iPhone 17 Pro differs), so it is never
-            // hard-coded. Values only count while the preview layer is in a window.
-            self.rotationObservation = nil
-            let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: self.primaryPreview.layer)
-            self.rotationCoordinator = coordinator
-            self.rotationObservation = coordinator.observe(\.videoRotationAngleForHorizonLevelPreview, options: [.initial, .new]) { [weak self] coordinator, _ in
-                guard let self, self.primaryPreview.hostIsOnScreen else { return }
-                let degrees = UprightTransform.normalize(Double(coordinator.videoRotationAngleForHorizonLevelPreview))
-                self.rotationAngleDidChange(to: degrees)
-            }
-            self.primaryPreview.onScreenChanged = { [weak self] onScreen in
-                guard onScreen, let self, let coordinator = self.rotationCoordinator else { return }
-                let degrees = UprightTransform.normalize(Double(coordinator.videoRotationAngleForHorizonLevelPreview))
-                self.rotationAngleDidChange(to: degrees)
-            }
 
             // Pressure: back off before the system shuts the camera down.
             self.pressureObservation = nil
@@ -771,45 +784,6 @@ final class CaptureEngine: NSObject {
               let index = VideoFilterPreset.all.firstIndex(where: { $0.id == filterID }),
               picker.selectedIndex != index else { return }
         picker.selectedIndex = index
-    }
-
-    private func rotationAngleDidChange(to degrees: Int) {
-        sessionQueue.async {
-            guard self.isConfigured, degrees != self.uprightRotationDegrees else { return }
-            let swapsBefore = UprightTransform(rotationDegrees: self.uprightRotationDegrees, mirrored: false).swapsDimensions
-            self.uprightRotationDegrees = degrees
-            let swapsAfter = UprightTransform(rotationDegrees: degrees, mirrored: false).swapsDimensions
-
-            guard swapsBefore != swapsAfter, let device = self.videoDevice else {
-                self.configureVideoConnection()
-                self.emit(.transformChanged(self.sessionTransform))
-                return
-            }
-
-            // A portrait-mounted sensor (the iPhone 17 front camera) reports 0 or 180
-            // degrees, so the frame the pipeline sees is not the sensor transposed.
-            // Format scoring depends on that, so re-pick the format when it flips,
-            // but never mid-take. The recorder lives on the data queue, so ask there.
-            self.dataQueue.async {
-                let isTakeInFlight = self.recorder != nil || self.isStartingRecorder
-                self.sessionQueue.async {
-                    guard !isTakeInFlight else {
-                        self.configureVideoConnection()
-                        self.emit(.transformChanged(self.sessionTransform))
-                        return
-                    }
-                    self.session.beginConfiguration()
-                    do {
-                        try self.applyFormat(to: device)
-                    } catch {
-                        self.emit(.failed(error.localizedDescription))
-                    }
-                    self.configureVideoConnection()
-                    self.session.commitConfiguration()
-                    self.emit(.configured(self.makeConfiguration()))
-                }
-            }
-        }
     }
 
     private func systemPressureDidChange(to level: AVCaptureDevice.SystemPressureState.Level) {
