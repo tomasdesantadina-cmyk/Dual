@@ -60,14 +60,15 @@ final class CameraModel {
 
     let engine = CaptureEngine()
 
+    // Internal bookkeeping that no view reads; kept out of observation tracking.
     private let store: SettingsStore
-    private var zoomModel = ZoomModel.singleCamera
-    private var currentZoom = 1.0
-    private var pinchStartZoom = 1.0
-    private var isPinching = false
-    private var transform: UprightTransform = .rotateClockwise
-    private var thermalObserver: NSObjectProtocol?
-    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    @ObservationIgnored private var zoomModel = ZoomModel.singleCamera
+    @ObservationIgnored private var currentZoom = 1.0
+    @ObservationIgnored private var pinchStartZoom = 1.0
+    @ObservationIgnored private var isPinching = false
+    @ObservationIgnored private var transform: UprightTransform = .rotateClockwise
+    @ObservationIgnored private var thermalObserver: NSObjectProtocol?
+    @ObservationIgnored private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
 
     init() {
         let store = SettingsStore()
@@ -85,6 +86,12 @@ final class CameraModel {
         }
         // Takes from a previous launch were already copied to Photos.
         TakeStorage.removeAllTakes()
+    }
+
+    deinit {
+        if let thermalObserver {
+            NotificationCenter.default.removeObserver(thermalObserver)
+        }
     }
 
     // MARK: - Lifecycle
@@ -328,6 +335,9 @@ final class CameraModel {
             transform = newTransform
 
         case .zoomChanged(let zoom):
+            // While the user pinches, the model already holds the newest value;
+            // echoes from the session queue would only make the label jitter.
+            guard !isPinching else { break }
             currentZoom = zoom
             zoomLabel = zoomModel.label(forZoom: zoom)
 

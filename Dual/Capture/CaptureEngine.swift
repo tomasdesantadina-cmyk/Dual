@@ -86,6 +86,10 @@ final class CaptureEngine: NSObject {
 
     private let sessionQueue = DispatchQueue(label: "com.intriq.dual.session")
     private let dataQueue = DispatchQueue(label: "com.intriq.dual.data", qos: .userInitiated)
+    /// Audio is delivered on its own queue so Core Image work never delays it,
+    /// then hopped onto dataQueue where the recorder state lives.
+    private let audioQueue = DispatchQueue(label: "com.intriq.dual.audio", qos: .userInitiated)
+    private let snapshotQueue = DispatchQueue(label: "com.intriq.dual.snapshot", qos: .utility)
     private let processor = FrameProcessor()
     private let videoOutput = AVCaptureVideoDataOutput()
     private let audioOutput = AVCaptureAudioDataOutput()
@@ -205,15 +209,19 @@ final class CaptureEngine: NSObject {
 
     func switchCamera() {
         sessionQueue.async {
-            self.position = self.position == .back ? .front : .back
+            let previous = self.position
+            self.position = previous == .back ? .front : .back
             do {
                 try self.configureSession()
-                self.emit(.torchChanged(false))
-                self.emit(.exposureFocusLockChanged(false))
-                self.emit(.configured(self.makeConfiguration()))
             } catch {
+                // Fall back to the camera that was working so the engine never stays wedged.
+                self.position = previous
+                try? self.configureSession()
                 self.emit(.failed(error.localizedDescription))
             }
+            self.emit(.torchChanged(false))
+            self.emit(.exposureFocusLockChanged(false))
+            self.emit(.configured(self.makeConfiguration()))
         }
     }
 
@@ -356,7 +364,7 @@ final class CaptureEngine: NSObject {
                 return
             }
             let settings = self.activeSettings
-            let recommended = self.audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov) as? [String: Any]
+            let recommended = self.audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov)
             self.isStartingRecorder = true
             self.cancelWhenStarted = false
 
@@ -451,6 +459,7 @@ final class CaptureEngine: NSObject {
     // MARK: - Session configuration (sessionQueue)
 
     private func configureSession() throws {
+        isConfigured = false
         session.beginConfiguration()
         defer { session.commitConfiguration() }
 
@@ -502,7 +511,7 @@ final class CaptureEngine: NSObject {
 
         if !session.outputs.contains(audioOutput), audioInput != nil, session.canAddOutput(audioOutput) {
             session.addOutput(audioOutput)
-            audioOutput.setSampleBufferDelegate(self, queue: dataQueue)
+            audioOutput.setSampleBufferDelegate(self, queue: audioQueue)
         }
 
         try applyFormat(to: device)
@@ -585,7 +594,7 @@ final class CaptureEngine: NSObject {
                               hasUltraWide: hasUltraWide)
         device.videoZoomFactor = CGFloat(zoomModel.clamped(zoomModel.wideFactor))
 
-        let plan = FramingPlanner.plan(sourceSize: chosen.portraitSize, pair: settings.pair, quality: settings.quality)
+        let plan = makeFormatPlan(for: chosen)
         formatPlan = plan
         let upscaleNote = plan.maxScaleFactor > 1.001 ? String(format: ", %.2fx upscale", plan.maxScaleFactor) : ""
         formatLabel = "\(chosen.width)x\(chosen.height) at \(Int(rate.rounded())) fps\(upscaleNote)"
@@ -593,6 +602,14 @@ final class CaptureEngine: NSObject {
             self.cachedPlan = plan
             self.processor.resetPools()
         }
+    }
+
+    /// The plan for a format's frames once they are upright. 90/270 degree
+    /// rotations swap the sensor's width and height; 0/180 keep them.
+    private func makeFormatPlan(for candidate: CaptureFormatCandidate) -> FramingPlan {
+        let swaps = UprightTransform(rotationDegrees: uprightRotationDegrees, mirrored: false).swapsDimensions
+        let sourceSize = swaps ? candidate.portraitSize : candidate.sensorSize
+        return FramingPlanner.plan(sourceSize: sourceSize, pair: settings.pair, quality: settings.quality)
     }
 
     /// Leaves buffers in the sensor's native orientation (rotation is done on
@@ -620,9 +637,13 @@ final class CaptureEngine: NSObject {
         let newOrientation = transform.imageOrientation
         dataQueue.async {
             if self.recorder == nil {
-                self.orientation = newOrientation
+                // Keep the plan seeded by applyFormat unless the orientation really changed,
+                // otherwise recording would be refused until the next frame arrives.
+                if self.orientation != newOrientation {
+                    self.orientation = newOrientation
+                    self.cachedPlan = nil
+                }
                 self.pendingOrientation = nil
-                self.cachedPlan = nil
             } else {
                 self.pendingOrientation = newOrientation
             }
@@ -819,16 +840,25 @@ final class CaptureEngine: NSObject {
 
         if snapshotRequested {
             snapshotRequested = false
-            if let data = processor.jpegData(for: upright) {
-                emit(.snapshotCaptured(data))
-            } else {
-                emit(.failed("Could not capture a snapshot."))
+            // JPEG encoding of a full frame takes long enough to drop frames, so it
+            // runs off the data queue. CIContext is thread-safe and the CIImage keeps
+            // its pixel buffer alive.
+            let snapshotImage = upright
+            snapshotQueue.async { [processor] in
+                if let data = processor.jpegData(for: snapshotImage) {
+                    self.emit(.snapshotCaptured(data))
+                } else {
+                    self.emit(.failed("Could not capture a snapshot."))
+                }
             }
         }
     }
 
+    /// Called on audioQueue; the recorder lives on dataQueue.
     private func handleAudio(_ sampleBuffer: CMSampleBuffer) {
-        recorder?.appendAudio(sampleBuffer)
+        dataQueue.async {
+            self.recorder?.appendAudio(sampleBuffer)
+        }
     }
 }
 
