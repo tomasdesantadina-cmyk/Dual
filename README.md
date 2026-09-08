@@ -1,0 +1,121 @@
+# Dual
+
+An iPhone camera app that records one shot as **two videos at the same time**: a
+9:16 portrait clip and a 16:9 landscape clip. Both are saved to Photos with
+identical audio and duration. Live previews of both framings are shown stacked
+on screen while you record.
+
+## What it does
+
+- Records 9:16 and 16:9 simultaneously from a single camera (other pairs
+  available: 1:1 + 16:9, 4:5 + 16:9, 9:16 + 1:1).
+- The landscape clip keeps the full sensor width and the portrait clip keeps
+  the full sensor height, so the landscape video shows a wider view than the
+  portrait one, as in the reference app.
+- Live previews show exactly what is being recorded, including zoom and
+  filter.
+- Zoom chip (0.5x / 1x / 2x / 3x depending on the phone) plus pinch to zoom.
+- Filters (Vivid, Warm, Chrome, Fade, Instant, Transfer, Mono, Noir).
+- Torch, flip camera, tap to focus and expose, snapshot button that saves a
+  still while recording.
+- Recording timer driven by the frames actually written, discard
+  confirmation, gallery thumbnail of the last take and an "Open Photos"
+  shortcut.
+- Settings: 1080p or 4K, 24/30/60 fps, H.264 or HEVC, layout swap, mirrored
+  front camera.
+- Thermal guard: warns when the phone gets hot and stops recording at the
+  critical level.
+
+## Requirements
+
+- Xcode 16 or newer on a Mac.
+- An iPhone running iOS 17 or newer (the Simulator has no camera).
+- A free Apple ID is enough to run on your own phone.
+
+## Build and run (about 10 minutes the first time)
+
+1. Clone this repository and open `Dual.xcodeproj` in Xcode.
+2. Select the `Dual` target, open **Signing & Capabilities**, tick
+   **Automatically manage signing** and pick your Team (your Apple ID).
+3. Plug in your iPhone, choose it as the run destination, press **Run**.
+4. On the phone, allow Camera, Microphone and Photos when asked. The first
+   time, you may need to trust the developer certificate under
+   Settings > General > VPN & Device Management.
+
+If `Dual.xcodeproj` will not open in your Xcode version, regenerate it:
+
+```bash
+brew install xcodegen
+xcodegen generate
+```
+
+## Tests
+
+The geometry, format selection, zoom labelling and layout logic live in the
+pure-Swift package `DualCore` and run anywhere Swift runs, including Linux:
+
+```bash
+cd DualCore
+swift test
+```
+
+In Xcode, `Cmd+U` on the `Dual` scheme runs the same tests.
+
+## How it works
+
+```
+AVCaptureSession (4:3 sensor format, 30 fps)
+   |-- AVCaptureVideoDataOutput  -> raw frames
+   |-- AVCaptureAudioDataOutput  -> audio samples
+            |
+   FrameProcessor (Core Image on the GPU)
+     rotate upright -> filter -> crop 9:16 -> scale -> BGRA buffer
+                              -> crop 16:9 -> scale -> BGRA buffer
+            |                                  |
+   AVSampleBufferDisplayLayer previews     two AVAssetWriters (one file each)
+                                           same start time, same frames,
+                                           same audio, same end time
+            |
+   PHPhotoLibrary (add-only) receives both .mov files
+```
+
+- **Format selection** (`DualCore/CaptureFormatSelector`): prefers a 4:3
+  sensor format whose short side is at least 1920 px so neither output is
+  upscaled at 1080p, then the smallest such format to keep the phone cool.
+  Typically 2592x1944 at 30 fps on iPhone 12 to 16.
+- **Cropping** (`DualCore/FramingGeometry`): centred crops snapped to even
+  pixels. From a 1944x2592 upright frame: portrait 1458x2592, landscape
+  1944x1092.
+- **Orientation**: raw frames stay in the sensor's native orientation and are
+  rotated on the GPU. The rotation comes from
+  `AVCaptureDevice.RotationCoordinator`, so phones whose sensors are mounted
+  differently still record upright video.
+- **Sync**: both writers start their session at the timestamp of the first
+  recorded frame, receive the same frames and audio buffers, and end at the
+  same timestamp, so durations match to the frame.
+
+## Project layout
+
+```
+Dual.xcodeproj/        Xcode 16 project (synchronised folder, no file lists)
+Dual/                  iOS app
+  Capture/             AVFoundation engine, frame processor, writers, Photos
+  Model/               Observable view model and settings persistence
+  Views/               SwiftUI screens and controls
+DualCore/              Pure Swift package with unit tests
+project.yml            XcodeGen fallback description of the project
+```
+
+## Known limits
+
+- Portrait use only. The UI is locked to portrait and the framings assume the
+  phone is held upright.
+- Photo mode is not included; the snapshot button saves a still from the video
+  stream instead.
+- Finished clips are moved straight into Photos (no in-app player), so nothing
+  is duplicated on disk.
+- 4K output upscales the landscape clip slightly on most phones because 4:3
+  sensor formats are 3024 px on the short side.
+- Not yet compiled on a Mac: the Swift sources have been syntax-checked and the
+  DualCore tests pass on Linux, but the first Xcode build may surface small
+  fixes.

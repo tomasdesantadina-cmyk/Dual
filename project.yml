@@ -1,0 +1,37 @@
+# XcodeGen fallback. Only needed if Dual.xcodeproj fails to open in your Xcode:
+#   brew install xcodegen && xcodegen generate
+name: Dual
+options:
+  bundleIdPrefix: com.intriq
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+packages:
+  DualCore:
+    path: DualCore
+targets:
+  Dual:
+    type: application
+    platform: iOS
+    sources:
+      - path: Dual
+        excludes:
+          - "Info.plist"
+    info:
+      path: Dual/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.intriq.dual
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+    dependencies:
+      - package: DualCore
