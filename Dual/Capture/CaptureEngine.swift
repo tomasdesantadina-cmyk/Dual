@@ -596,6 +596,12 @@ final class CaptureEngine: NSObject {
         if format.supportedColorSpaces.contains(.sRGB) {
             device.activeColorSpace = .sRGB
         }
+        // HDR video is the default on recent iPhones. The pipeline renders 8-bit
+        // BGRA, so keep the camera out of 10-bit HLG rather than tone-map twice.
+        if format.isVideoHDRSupported {
+            device.automaticallyAdjustsVideoHDREnabled = false
+            device.isVideoHDREnabled = false
+        }
 
         // Frame durations reset when the format changes, so set them afterwards and
         // only to a value inside a supported range (anything else is an exception).
