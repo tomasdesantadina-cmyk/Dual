@@ -173,6 +173,14 @@ final class ClipWriter {
     func finish(endTime: CMTime, completion: @escaping (Result<URL, Error>) -> Void) {
         switch state {
         case .writing:
+            // The writer can fail between appends (disk full, encoder error); ending a
+            // session on a failed writer raises an exception, so route it to failure.
+            guard writer.status == .writing else {
+                let error = writer.error
+                cancel()
+                completion(.failure(WriterError.underlying(error)))
+                return
+            }
             state = .finishing
             if endTime.isValid, !lastVideoTime.isValid || endTime > lastVideoTime {
                 writer.endSession(atSourceTime: endTime)
@@ -180,14 +188,16 @@ final class ClipWriter {
             videoInput.markAsFinished()
             audioInput?.markAsFinished()
             let url = self.url
-            writer.finishWriting { [weak self] in
-                guard let self else { return }
-                if self.writer.status == .completed {
-                    self.state = .finished
+            // Capture self strongly: nothing else keeps this writer alive while the
+            // file is finalised, and the completion must run so the recorder's
+            // DispatchGroup balances. AVFoundation releases the block afterwards.
+            writer.finishWriting { [self] in
+                if writer.status == .completed {
+                    state = .finished
                     completion(.success(url))
                 } else {
-                    self.state = .failed
-                    completion(.failure(WriterError.underlying(self.writer.error)))
+                    state = .failed
+                    completion(.failure(WriterError.underlying(writer.error)))
                 }
             }
         case .failed:

@@ -31,6 +31,9 @@ final class DualRecorder {
     private let writers: [ClipWriter]
     private(set) var isStarted = false
     private(set) var droppedVideoFrames = 0
+    /// Set once any writer fails to start or fails mid-take; the engine ends the
+    /// take as soon as it sees this.
+    private(set) var failure: Error?
     private var startTime: CMTime = .invalid
     private var lastFrameTime: CMTime = .invalid
     private var lastFrameDuration: CMTime = .invalid
@@ -74,7 +77,7 @@ final class DualRecorder {
     /// at the same source time. If any writer is not ready the frame is dropped
     /// for all of them.
     func appendVideo(_ outputs: [FrameProcessor.RenderedOutput], at time: CMTime) {
-        guard time.isValid else { return }
+        guard failure == nil, time.isValid else { return }
 
         // Every writer needs a rendered frame for its framing.
         var matched: [(ClipWriter, CVPixelBuffer)] = []
@@ -94,7 +97,7 @@ final class DualRecorder {
                 }
             }
             guard allStarted else {
-                writers.forEach { $0.cancel() }
+                latchFailure(writers.compactMap { $0.error }.first ?? ClipWriter.WriterError.cannotStart(nil))
                 return
             }
             isStarted = true
@@ -102,11 +105,19 @@ final class DualRecorder {
         }
 
         guard writers.allSatisfy({ $0.isReadyForVideo }) else {
-            droppedVideoFrames += 1
+            if let failed = writers.first(where: { $0.state == .failed }) {
+                latchFailure(failed.error ?? ClipWriter.WriterError.underlying(nil))
+            } else {
+                droppedVideoFrames += 1
+            }
             return
         }
         for (writer, buffer) in matched {
             writer.appendVideo(buffer, at: time)
+        }
+        if let failed = writers.first(where: { $0.state == .failed }) {
+            latchFailure(failed.error ?? ClipWriter.WriterError.underlying(nil))
+            return
         }
         if lastFrameTime.isValid {
             let delta = CMTimeSubtract(time, lastFrameTime)
@@ -115,9 +126,15 @@ final class DualRecorder {
         lastFrameTime = time
     }
 
+    private func latchFailure(_ error: Error) {
+        guard failure == nil else { return }
+        failure = error
+        writers.forEach { $0.cancel() }
+    }
+
     /// Fans one audio sample buffer out to every writer, or to none.
     func appendAudio(_ sampleBuffer: CMSampleBuffer) {
-        guard isStarted else { return }
+        guard isStarted, failure == nil else { return }
         let audioWriters = writers.filter { $0.hasAudio }
         guard !audioWriters.isEmpty, audioWriters.allSatisfy({ $0.isReadyForAudio }) else { return }
         for writer in audioWriters {
@@ -128,6 +145,11 @@ final class DualRecorder {
     /// Finalises all clips with one shared end time. Completion fires once, on a
     /// background queue, with every clip URL or the first error encountered.
     func finish(completion: @escaping (Result<[Clip], Error>) -> Void) {
+        if let failure {
+            writers.forEach { $0.cancel() }
+            completion(.failure(RecorderError.writerFailed(failure)))
+            return
+        }
         guard isStarted, lastFrameTime.isValid else {
             writers.forEach { $0.cancel() }
             completion(.failure(RecorderError.nothingRecorded))

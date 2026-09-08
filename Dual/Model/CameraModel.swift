@@ -13,6 +13,8 @@ final class CameraModel {
 
     enum Phase: Equatable {
         case idle
+        /// Record was tapped; the writers are being created.
+        case starting
         case recording
         case saving
     }
@@ -84,8 +86,6 @@ final class CameraModel {
                 self?.thermalStateChanged()
             }
         }
-        // Takes from a previous launch were already copied to Photos.
-        TakeStorage.removeAllTakes()
     }
 
     deinit {
@@ -110,9 +110,27 @@ final class CameraModel {
         case .authorized:
             authorization = .authorized
             engine.start(settings: settings, position: .back)
+            await recoverOrphanedTake()
         case .denied, .notDetermined:
             authorization = .denied
         }
+    }
+
+    /// Clips left on disk by an earlier run (a failed Photos save, or a take cut
+    /// short by a crash) are offered for saving instead of being deleted.
+    private func recoverOrphanedTake() async {
+        guard lastTake == nil else { return }
+        let files = TakeStorage.existingTakeFiles()
+        guard let first = files.first else { return }
+        let thumbnail = await ThumbnailMaker.thumbnail(for: first)
+        let duration = await ThumbnailMaker.duration(of: first)
+        let modified = (try? first.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date()
+        lastTake = LastTake(outputs: [],
+                            thumbnail: thumbnail,
+                            date: modified,
+                            duration: duration,
+                            savedToPhotos: false,
+                            pendingURLs: files)
     }
 
     private func thermalStateChanged() {
@@ -138,9 +156,11 @@ final class CameraModel {
                 engine.start(settings: settings, position: isFrontCamera ? .front : .back)
             }
         case .background:
-            if phase == .recording {
+            if phase == .recording || phase == .starting || phase == .saving {
                 // Keep running long enough to finalise and save the clips.
                 beginBackgroundTask()
+            }
+            if phase == .recording || phase == .starting {
                 engine.stopRecording()
             }
             engine.stop()
@@ -177,8 +197,9 @@ final class CameraModel {
         case .idle:
             guard isSessionReady else { return }
             isShowingFilterPicker = false
+            phase = .starting
             engine.startRecording()
-        case .recording:
+        case .starting, .recording:
             engine.stopRecording()
         case .saving:
             break
@@ -186,7 +207,7 @@ final class CameraModel {
     }
 
     func discardRecording() {
-        guard phase == .recording else { return }
+        guard phase == .recording || phase == .starting else { return }
         engine.cancelRecording()
     }
 
@@ -397,6 +418,10 @@ final class CameraModel {
             interruptionMessage = nil
 
         case .failed(let message):
+            if phase == .starting {
+                phase = .idle
+                endBackgroundTask()
+            }
             alert = AlertMessage(title: "Camera problem", message: message)
         }
     }
@@ -420,14 +445,14 @@ final class CameraModel {
                                 duration: duration,
                                 savedToPhotos: true,
                                 pendingURLs: [])
-            TakeStorage.removeAllTakes()
         } catch {
+            // Files that did move are gone; whatever is left can be retried.
             lastTake = LastTake(outputs: clips.map { $0.framing },
                                 thumbnail: thumbnail,
                                 date: Date(),
                                 duration: duration,
                                 savedToPhotos: false,
-                                pendingURLs: urls)
+                                pendingURLs: urls.filter { FileManager.default.fileExists(atPath: $0.path) })
             alert = AlertMessage(title: "Could not save to Photos", message: error.localizedDescription)
         }
         phase = .idle
@@ -438,6 +463,7 @@ final class CameraModel {
     func retrySavingLastTake() async {
         guard let take = lastTake, !take.pendingURLs.isEmpty, phase == .idle else { return }
         phase = .saving
+        beginBackgroundTask()
         do {
             try await PhotoLibrarySaver.saveVideos(at: take.pendingURLs)
             lastTake = LastTake(outputs: take.outputs,
@@ -446,10 +472,17 @@ final class CameraModel {
                                 duration: take.duration,
                                 savedToPhotos: true,
                                 pendingURLs: [])
-            TakeStorage.removeAllTakes()
         } catch {
+            let remaining = take.pendingURLs.filter { FileManager.default.fileExists(atPath: $0.path) }
+            lastTake = LastTake(outputs: take.outputs,
+                                thumbnail: take.thumbnail,
+                                date: take.date,
+                                duration: take.duration,
+                                savedToPhotos: remaining.isEmpty,
+                                pendingURLs: remaining)
             alert = AlertMessage(title: "Could not save to Photos", message: error.localizedDescription)
         }
         phase = .idle
+        endBackgroundTask()
     }
 }

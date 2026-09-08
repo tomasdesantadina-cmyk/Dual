@@ -152,7 +152,7 @@ final class CaptureEngine: NSObject {
             self.position = position
             self.dataQueue.async {
                 self.activeSettings = settings
-                self.cachedPlan = nil
+                self.refreshCachedPlan()
             }
             if !self.isConfigured {
                 do {
@@ -185,7 +185,7 @@ final class CaptureEngine: NSObject {
             self.settings = newSettings
             self.dataQueue.async {
                 self.activeSettings = newSettings
-                self.cachedPlan = nil
+                self.refreshCachedPlan()
             }
             let formatChanged = old.quality != newSettings.quality
                 || old.frameRate != newSettings.frameRate
@@ -216,9 +216,15 @@ final class CaptureEngine: NSObject {
             } catch {
                 // Fall back to the camera that was working so the engine never stays wedged.
                 self.position = previous
-                try? self.configureSession()
+                do {
+                    try self.configureSession()
+                } catch let fallbackError {
+                    self.emit(.failed(fallbackError.localizedDescription))
+                    return
+                }
                 self.emit(.failed(error.localizedDescription))
             }
+            guard self.isConfigured else { return }
             self.emit(.torchChanged(false))
             self.emit(.exposureFocusLockChanged(false))
             self.emit(.configured(self.makeConfiguration()))
@@ -420,7 +426,8 @@ final class CaptureEngine: NSObject {
             guard let recorder = self.recorder else { return }
             self.recorder = nil
             self.applyPendingOrientation()
-            recorder.finish { [weak self] result in
+            recorder.finish { [weak self, recorder] result in
+                _ = recorder // keep the recorder alive until its writers have finished
                 self?.emit(.recordingFinished(result))
             }
         }
@@ -438,6 +445,13 @@ final class CaptureEngine: NSObject {
             recorder.cancel()
             self.emit(.recordingFinished(.failure(DualRecorder.RecorderError.nothingRecorded)))
         }
+    }
+
+    /// dataQueue only. Keeps the plan usable when only pair/quality changed, so
+    /// startRecording never has to wait for the next frame.
+    private func refreshCachedPlan() {
+        guard let old = cachedPlan else { return }
+        cachedPlan = FramingPlanner.plan(sourceSize: old.sourceSize, pair: activeSettings.pair, quality: activeSettings.quality)
     }
 
     /// dataQueue only.
@@ -570,9 +584,10 @@ final class CaptureEngine: NSObject {
         // Frame durations reset when the format changes, so set them afterwards and
         // only to a value inside a supported range (anything else is an exception).
         let requestedRate = Double(settings.frameRate)
-        let rate = min(requestedRate, chosen.maxFrameRate)
+        let timescale = CMTimeScale(max(1, min(requestedRate, chosen.maxFrameRate).rounded()))
+        let rate = Double(timescale)
         if format.videoSupportedFrameRateRanges.contains(where: { Double($0.minFrameRate) <= rate && rate <= Double($0.maxFrameRate) }) {
-            let duration = CMTime(value: 1, timescale: CMTimeScale(rate.rounded()))
+            let duration = CMTime(value: 1, timescale: timescale)
             device.activeVideoMinFrameDuration = duration
             device.activeVideoMaxFrameDuration = duration
         }
@@ -831,10 +846,18 @@ final class CaptureEngine: NSObject {
 
         if let recorder {
             recorder.appendVideo(outputs, at: time)
-            let duration = recorder.recordedDuration
-            if duration - lastReportedDuration >= 0.2 {
-                lastReportedDuration = duration
-                emit(.recordingProgress(duration))
+            if let error = recorder.failure {
+                // A writer died mid-take: end the take now instead of recording silence.
+                self.recorder = nil
+                applyPendingOrientation()
+                recorder.cancel()
+                emit(.recordingFinished(.failure(DualRecorder.RecorderError.writerFailed(error))))
+            } else {
+                let duration = recorder.recordedDuration
+                if duration - lastReportedDuration >= 0.2 {
+                    lastReportedDuration = duration
+                    emit(.recordingProgress(duration))
+                }
             }
         }
 

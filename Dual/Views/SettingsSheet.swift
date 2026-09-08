@@ -68,6 +68,11 @@ struct SettingsSheet: View {
             .onChange(of: draft) { _, newValue in
                 model.updateSettings(newValue)
             }
+            .onChange(of: model.settings) { _, applied in
+                if draft != applied {
+                    draft = applied
+                }
+            }
         }
         .presentationDetents([.medium, .large])
     }

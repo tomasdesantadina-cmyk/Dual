@@ -23,7 +23,7 @@ struct TopBar: View {
                         model.toggleTorch()
                     }
                     RoundIconButton(systemImage: "slider.horizontal.3",
-                                    isEnabled: !model.isRecording) {
+                                    isEnabled: model.phase == .idle) {
                         model.isShowingSettings = true
                     }
                 }

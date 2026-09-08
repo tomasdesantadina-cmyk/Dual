@@ -136,6 +136,10 @@ final class FrameProcessor {
         for (key, value) in preset.parameters {
             filter.setValue(NSNumber(value: value), forKey: key)
         }
-        return filter.outputImage
+        let output = filter.outputImage
+        // The output graph owns its copy of the input; clearing the filter's input
+        // stops the cached filter from pinning the camera's pixel buffer.
+        filter.setValue(nil, forKey: kCIInputImageKey)
+        return output
     }
 }

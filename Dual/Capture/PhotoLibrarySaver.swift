@@ -8,11 +8,14 @@ enum PhotoLibrarySaver {
 
     enum SaveError: LocalizedError {
         case notAuthorized
+        case filesMissing
 
         var errorDescription: String? {
             switch self {
             case .notAuthorized:
                 return "Dual is not allowed to add to your photo library. You can change this in Settings."
+            case .filesMissing:
+                return "The recorded files are no longer on this device."
             }
         }
     }
@@ -31,12 +34,15 @@ enum PhotoLibrarySaver {
         }
     }
 
-    /// Moves every video file into the library (no duplicate copy on disk). After
-    /// this returns successfully the URLs are no longer valid.
+    /// Moves every video file into the library (no duplicate copy on disk). Each
+    /// clip is its own change so a failure never re-submits a clip that already
+    /// moved; files that no longer exist are skipped.
     static func saveVideos(at urls: [URL]) async throws {
+        let existing = urls.filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard !existing.isEmpty else { throw SaveError.filesMissing }
         guard await ensureAddAccess() else { throw SaveError.notAuthorized }
-        try await PHPhotoLibrary.shared().performChanges {
-            for url in urls {
+        for url in existing {
+            try await PHPhotoLibrary.shared().performChanges {
                 let request = PHAssetCreationRequest.forAsset()
                 let options = PHAssetResourceCreationOptions()
                 options.shouldMoveFile = true
@@ -80,19 +86,33 @@ enum ThumbnailMaker {
     }
 }
 
-/// Where finished takes live on disk before (and after) they are copied to Photos.
+/// Where takes live on disk until they have been moved into Photos. Application
+/// Support is not purged by the system (unlike Caches), because until the move
+/// succeeds these files are the only copy of the user's recording.
 enum TakeStorage {
     static var directory: URL {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        return caches.appendingPathComponent("Takes", isDirectory: true)
+        return base.appendingPathComponent("Takes", isDirectory: true)
     }
 
     @discardableResult
     static func prepareDirectory() throws -> URL {
-        let url = directory
+        var url = directory
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
         return url
+    }
+
+    /// Movie files left over from an earlier run (a save that failed, or a take
+    /// cut short by a crash), oldest first.
+    static func existingTakeFiles() -> [URL] {
+        guard let contents = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return [] }
+        return contents
+            .filter { $0.pathExtension.lowercased() == "mov" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
     static func baseName(for date: Date = Date()) -> String {

@@ -35,14 +35,18 @@ final class PreviewHostView: UIView {
     }
 
     func attach(_ newTarget: PreviewTarget) {
-        target = newTarget
         let newLayer = newTarget.layer
-        guard displayLayer !== newLayer else { return }
-        displayLayer?.removeFromSuperlayer()
-        newLayer.removeFromSuperlayer()
-        layer.addSublayer(newLayer)
-        displayLayer = newLayer
-        setNeedsLayout()
+        if displayLayer !== newLayer {
+            // Only detach a layer this host still owns; another host may have adopted it.
+            if let old = displayLayer, old.superlayer === layer {
+                old.removeFromSuperlayer()
+            }
+            newLayer.removeFromSuperlayer()
+            layer.addSublayer(newLayer)
+            displayLayer = newLayer
+            setNeedsLayout()
+        }
+        target = newTarget
         if window != nil {
             newTarget.hostIsOnScreen = true
             newTarget.onScreenChanged?(true)
@@ -51,9 +55,11 @@ final class PreviewHostView: UIView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
+        // A stale host that no longer shows the layer must not report for it.
+        guard let target, target.layer.superlayer === layer else { return }
         let onScreen = window != nil
-        target?.hostIsOnScreen = onScreen
-        target?.onScreenChanged?(onScreen)
+        target.hostIsOnScreen = onScreen
+        target.onScreenChanged?(onScreen)
     }
 
     override func layoutSubviews() {
@@ -76,21 +82,22 @@ struct PreviewPane: View {
             PreviewView(target: target)
                 .contentShape(Rectangle())
                 .gesture(
-                    SpatialTapGesture()
-                        .onEnded { value in
-                            guard let output = model.output(for: aspect) else { return }
-                            let location = value.location
-                            let width = max(proxy.size.width, 1)
-                            let height = max(proxy.size.height, 1)
-                            let point = UnitPoint2D(x: Double(location.x / width), y: Double(location.y / height))
-                            model.focus(atPreviewPoint: point, in: output, indicatorLocation: location, paneID: aspect.label)
-                        }
-                )
-                .simultaneousGesture(
+                    // Long press wins; a short press fails it and falls through to the tap.
                     LongPressGesture(minimumDuration: 0.5)
                         .onEnded { _ in
                             model.toggleExposureFocusLock()
                         }
+                        .exclusively(before:
+                            SpatialTapGesture()
+                                .onEnded { value in
+                                    guard let output = model.output(for: aspect) else { return }
+                                    let location = value.location
+                                    let width = max(proxy.size.width, 1)
+                                    let height = max(proxy.size.height, 1)
+                                    let point = UnitPoint2D(x: Double(location.x / width), y: Double(location.y / height))
+                                    model.focus(atPreviewPoint: point, in: output, indicatorLocation: location, paneID: aspect.label)
+                                }
+                        )
                 )
                 .overlay {
                     if let indicator = model.focusIndicator, indicator.paneID == aspect.label {

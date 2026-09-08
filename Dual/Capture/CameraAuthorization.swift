@@ -28,7 +28,7 @@ enum CameraAuthorization {
             cameraStatus = granted ? .authorized : .denied
         }
         var microphoneGranted = status(for: .audio) == .authorized
-        if status(for: .audio) == .notDetermined {
+        if cameraStatus == .authorized, status(for: .audio) == .notDetermined {
             microphoneGranted = await AVCaptureDevice.requestAccess(for: .audio)
         }
         return (cameraStatus, microphoneGranted)

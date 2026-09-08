@@ -106,7 +106,7 @@ struct CameraScreen: View {
 
     private var previews: some View {
         GeometryReader { proxy in
-            let layout = PreviewLayout.compute(availableWidth: Double(proxy.size.width),
+            let layout = DualCore.PreviewLayout.compute(availableWidth: Double(proxy.size.width),
                                                availableHeight: Double(proxy.size.height),
                                                aspects: orderedAspects)
             VStack(spacing: CGFloat(layout.spacing)) {

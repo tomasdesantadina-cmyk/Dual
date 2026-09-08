@@ -23,19 +23,20 @@ final class PreviewTarget {
         layer.backgroundColor = UIColor.black.cgColor
     }
 
-    /// Thread-safe: AVSampleBufferDisplayLayer accepts enqueues from any queue.
+    /// Thread-safe: the renderer accepts enqueues from any queue.
     func display(_ pixelBuffer: CVPixelBuffer, presentationTime: CMTime) {
         guard let sampleBuffer = PreviewTarget.makeSampleBuffer(from: pixelBuffer, presentationTime: presentationTime) else { return }
-        if layer.status == .failed || layer.requiresFlushToResumeDecoding {
-            layer.flush()
+        let renderer = layer.sampleBufferRenderer
+        if renderer.status == .failed || renderer.requiresFlushToResumeDecoding {
+            renderer.flush()
         }
-        if layer.isReadyForMoreMediaData {
-            layer.enqueue(sampleBuffer)
+        if renderer.isReadyForMoreMediaData {
+            renderer.enqueue(sampleBuffer)
         }
     }
 
     func clear() {
-        layer.flushAndRemoveImage()
+        layer.sampleBufferRenderer.flush(removingDisplayedImage: true, completionHandler: nil)
     }
 
     private static func makeSampleBuffer(from pixelBuffer: CVPixelBuffer, presentationTime: CMTime) -> CMSampleBuffer? {
