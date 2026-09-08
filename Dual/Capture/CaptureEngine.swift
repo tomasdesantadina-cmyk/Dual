@@ -770,9 +770,39 @@ final class CaptureEngine: NSObject {
     private func rotationAngleDidChange(to degrees: Int) {
         sessionQueue.async {
             guard self.isConfigured, degrees != self.uprightRotationDegrees else { return }
+            let swapsBefore = UprightTransform(rotationDegrees: self.uprightRotationDegrees, mirrored: false).swapsDimensions
             self.uprightRotationDegrees = degrees
-            self.configureVideoConnection()
-            self.emit(.transformChanged(self.sessionTransform))
+            let swapsAfter = UprightTransform(rotationDegrees: degrees, mirrored: false).swapsDimensions
+
+            guard swapsBefore != swapsAfter, let device = self.videoDevice else {
+                self.configureVideoConnection()
+                self.emit(.transformChanged(self.sessionTransform))
+                return
+            }
+
+            // A portrait-mounted sensor (the iPhone 17 front camera) reports 0 or 180
+            // degrees, so the frame the pipeline sees is not the sensor transposed.
+            // Format scoring depends on that, so re-pick the format when it flips,
+            // but never mid-take. The recorder lives on the data queue, so ask there.
+            self.dataQueue.async {
+                let isTakeInFlight = self.recorder != nil || self.isStartingRecorder
+                self.sessionQueue.async {
+                    guard !isTakeInFlight else {
+                        self.configureVideoConnection()
+                        self.emit(.transformChanged(self.sessionTransform))
+                        return
+                    }
+                    self.session.beginConfiguration()
+                    do {
+                        try self.applyFormat(to: device)
+                    } catch {
+                        self.emit(.failed(error.localizedDescription))
+                    }
+                    self.configureVideoConnection()
+                    self.session.commitConfiguration()
+                    self.emit(.configured(self.makeConfiguration()))
+                }
+            }
         }
     }
 
