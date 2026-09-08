@@ -90,6 +90,27 @@ final class CaptureFormatSelectorTests: XCTestCase {
         XCTAssertEqual(CaptureFormatRequirements(softMaxPixels: 1).softMaxPixels, 1)
     }
 
+    func testPortraitMountedSquareSensorIsPlannedWithoutSwapping() {
+        // iPhone 17 front camera: square sensor mounted in portrait, reported as 3024x3024,
+        // upright rotation 0 degrees. Both crops should be full-width / full-height, no upscale.
+        let square = CaptureFormatCandidate(index: 0, width: 3024, height: 3024, maxFrameRate: 30, isBinned: false, pixelFormat: "420f")
+        var requirements = CaptureFormatRequirements(targetFrameRate: 30, quality: .hd1080)
+        requirements.uprightSwapsDimensions = false
+        XCTAssertEqual(requirements.uprightSize(of: square), PixelSize(width: 3024, height: 3024))
+        let plan = FramingPlanner.plan(sourceSize: requirements.uprightSize(of: square), pair: .portraitAndLandscape, quality: .hd1080)
+        XCTAssertLessThanOrEqual(plan.maxScaleFactor, 1)
+        XCTAssertNotNil(CaptureFormatSelector.score(square, requirements: requirements))
+
+        // A portrait-mounted 3:4 sensor reported as 3024x4032 with rotation 0.
+        let tall = CaptureFormatCandidate(index: 1, width: 3024, height: 4032, maxFrameRate: 30, isBinned: false, pixelFormat: "420f")
+        XCTAssertEqual(requirements.uprightSize(of: tall), PixelSize(width: 3024, height: 4032))
+        let tallScore = CaptureFormatSelector.score(tall, requirements: requirements) ?? -1000
+        var swapped = requirements
+        swapped.uprightSwapsDimensions = true
+        let swappedScore = CaptureFormatSelector.score(tall, requirements: swapped) ?? -1000
+        XCTAssertGreaterThan(tallScore, swappedScore, "treating a portrait sensor as landscape would wrongly penalise it")
+    }
+
     func testEmptyListGivesNil() {
         XCTAssertNil(CaptureFormatSelector.select(from: []))
     }

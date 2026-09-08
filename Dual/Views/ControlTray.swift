@@ -97,10 +97,12 @@ struct FilterStrip: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(VideoFilterPreset.all) { preset in
-                    Chip(title: preset.displayName, isActive: preset.id == model.selectedFilter.id) {
-                        model.select(filter: preset)
+            GlassGroup(spacing: 8) {
+                HStack(spacing: 8) {
+                    ForEach(VideoFilterPreset.all) { preset in
+                        Chip(title: preset.displayName, isActive: preset.id == model.selectedFilter.id) {
+                            model.select(filter: preset)
+                        }
                     }
                 }
             }

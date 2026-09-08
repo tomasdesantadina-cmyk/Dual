@@ -50,6 +50,8 @@ final class CameraModel {
     var snapshotFlash = false
     var isExposureFocusLocked = false
     var pressureWarning: String?
+    /// The Camera Control overlay is up; on-screen controls step back.
+    var isCameraControlFullscreen = false
 
     var isRecording: Bool { phase == .recording }
     /// A take is in flight: the writers are being created or frames are being written.
@@ -204,6 +206,11 @@ final class CameraModel {
     }
 
     // MARK: - Recording
+
+    /// Camera Control, Action button or a volume button was pressed while the camera runs.
+    func hardwareCaptureButtonPressed() {
+        toggleRecording()
+    }
 
     func toggleRecording() {
         switch phase {
@@ -380,6 +387,14 @@ final class CameraModel {
 
         case .exposureFocusLockChanged(let isLocked):
             isExposureFocusLocked = isLocked
+
+        case .filterPicked(let index):
+            if VideoFilterPreset.all.indices.contains(index) {
+                select(filter: VideoFilterPreset.all[index])
+            }
+
+        case .captureControlsFullscreen(let isFullscreen):
+            isCameraControlFullscreen = isFullscreen
 
         case .pressureChanged(let isSerious, let isCritical):
             if isCritical {

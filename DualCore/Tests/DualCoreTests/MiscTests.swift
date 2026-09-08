@@ -61,10 +61,11 @@ final class CaptureSettingsTests: XCTestCase {
 
     func testBitrateFollowsAspectAndCodec() {
         let settings = CaptureSettings.default
+        XCTAssertEqual(settings.codec, .hevc)
         XCTAssertEqual(settings.bitrate(for: .portrait9x16), settings.bitrate(for: .landscape16x9))
-        var hevc = settings
-        hevc.codec = .hevc
-        XCTAssertLessThan(hevc.bitrate(for: .portrait9x16), settings.bitrate(for: .portrait9x16))
+        var h264 = settings
+        h264.codec = .h264
+        XCTAssertGreaterThan(h264.bitrate(for: .portrait9x16), settings.bitrate(for: .portrait9x16))
     }
 
     func testFormatRequirementsMirrorSettings() {

@@ -12,8 +12,9 @@ public struct ZoomModel: Hashable, Sendable {
     /// Whether the device includes an ultra-wide constituent camera.
     public let hasUltraWide: Bool
 
-    /// Largest display factor we allow the user to reach.
-    public static let maxDisplayFactor = 10.0
+    /// Largest display factor we allow the user to reach. The system camera goes
+    /// further, but beyond this the crop from even a 48 MP sensor is very soft.
+    public static let maxDisplayFactor = 25.0
 
     public init(minZoom: Double, maxZoom: Double, switchOverFactors: [Double], hasUltraWide: Bool) {
         let safeMin = max(1.0, minZoom.isFinite ? minZoom : 1.0)
@@ -48,8 +49,9 @@ public struct ZoomModel: Hashable, Sendable {
         clamped(startZoom * (scale.isFinite && scale > 0 ? scale : 1))
     }
 
-    /// Display factors for the zoom chip: 0.5x (if ultra-wide), 1x, then each lens
-    /// switch-over point (e.g. 2x, 3x, 5x). A single-lens phone offers 1x and 2x.
+    /// Display factors for the zoom chip, mirroring the system camera: 0.5x (if
+    /// ultra-wide), 1x, a 2x sensor crop, then each lens switch-over point (3x, 4x,
+    /// 5x). A single-lens phone offers 1x and 2x.
     public var presets: [Double] {
         var result: [Double] = []
         if hasUltraWide {
@@ -59,11 +61,11 @@ public struct ZoomModel: Hashable, Sendable {
         let lensFactors = switchOverFactors
             .map { displayFactor(for: $0) }
             .filter { $0 > 1.0 + 0.01 }
-        if lensFactors.isEmpty {
-            if displayFactor(for: maxZoom) >= 2.0 { result.append(2.0) }
-        } else {
-            result.append(contentsOf: lensFactors)
+        let hasLensNearTwo = lensFactors.contains { abs($0 - 2.0) < 0.3 }
+        if !hasLensNearTwo, displayFactor(for: maxZoom) >= 2.0 {
+            result.append(2.0)
         }
+        result.append(contentsOf: lensFactors.sorted())
         // Deduplicate (with rounding) while keeping order.
         var seen = Set<Int>()
         return result.filter { value in

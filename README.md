@@ -21,16 +21,22 @@ on screen while you record.
 - Recording timer driven by the frames actually written, discard
   confirmation, gallery thumbnail of the last take and an "Open Photos"
   shortcut.
-- Settings: 1080p or 4K, 24/30/60 fps, H.264 or HEVC, layout swap, mirrored
-  front camera.
+- Settings: 1080p or 4K, 24/30/60 fps, HEVC (default) or H.264, layout swap,
+  mirrored front camera.
+- Camera Control button (iPhone 16 and later): press to start and stop, slide
+  for zoom, and a Filter picker in the Camera Control overlay. The Action and
+  volume buttons also start and stop recording while the camera is open.
+- Liquid Glass controls on iOS 26 and later; translucent fills before that.
 - Thermal guard: warns when the phone or camera gets hot and stops recording
   at the critical level. Movie fragments every 2 seconds keep a take
   readable if the app is killed mid-recording.
 
 ## Requirements
 
-- Xcode 16 or newer on a Mac.
-- An iPhone running iOS 17 or newer (the Simulator has no camera).
+- Xcode 26 or newer on a Mac (the app uses the iOS 26 SDK's Liquid Glass and
+  the iOS 18 SDK's Camera Control APIs; it still runs back to iOS 17).
+- An iPhone running iOS 17 or newer (the Simulator has no camera). Tuned for
+  the iPhone 17 Pro Max on iOS 26 and 27.
 - A free Apple ID is enough to run on your own phone.
 
 ## Build and run (about 10 minutes the first time)
@@ -107,6 +113,21 @@ DualCore/              Pure Swift package with unit tests
 project.yml            XcodeGen fallback description of the project
 ```
 
+## iPhone 17 Pro Max notes
+
+- The zoom chip follows the system camera: 0.5x, 1x, 2x, 4x; pinch or the
+  Camera Control slider reach 25x.
+- The front Center Stage camera is a square sensor mounted in portrait and is
+  exposed as an ultra-wide device. Discovery, the rotation coordinator and the
+  format selector all handle that, so portrait clips from it are upright and
+  both crops use the full sensor.
+- Defaults are HEVC at 1080p30 (about 7.5 Mbps per clip). 4K30 HEVC runs at
+  about 30 Mbps per clip; the A19 Pro handles two 4K encodes comfortably, but
+  the 4:3 sensor formats top out at 3024 px on the short side, so 4K clips are
+  upscaled 1.27x.
+- Not yet adopted, pending a device test: 10-bit HDR (HLG / Dolby Vision)
+  recording, and the iOS 26 dynamic aspect ratio API for the front camera.
+
 ## Known limits
 
 - Portrait use only. The UI is locked to portrait and the framings assume the
@@ -119,4 +140,5 @@ project.yml            XcodeGen fallback description of the project
   sensor formats are 3024 px on the short side.
 - Not yet compiled on a Mac: the Swift sources have been syntax-checked and the
   DualCore tests pass on Linux, but the first Xcode build may surface small
-  fixes.
+  fixes. Camera Control and Liquid Glass paths are the newest APIs used and
+  the first places to look.

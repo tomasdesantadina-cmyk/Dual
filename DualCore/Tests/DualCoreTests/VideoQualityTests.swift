@@ -29,8 +29,9 @@ final class VideoQualityTests: XCTestCase {
 
     func testBitratePlanning() {
         let hd = PixelSize(width: 1920, height: 1080)
-        XCTAssertEqual(VideoEncodingPlan.averageBitrate(for: hd, frameRate: 30, codec: .h264), 8_709_120)
-        XCTAssertEqual(VideoEncodingPlan.averageBitrate(for: hd, frameRate: 30, codec: .hevc), 5_287_680)
+        XCTAssertEqual(VideoEncodingPlan.averageBitrate(for: hd, frameRate: 30, codec: .h264), 9_953_280)
+        XCTAssertEqual(VideoEncodingPlan.averageBitrate(for: hd, frameRate: 30, codec: .hevc), 7_464_960)
+        XCTAssertEqual(VideoEncodingPlan.averageBitrate(for: PixelSize(width: 3840, height: 2160), frameRate: 30, codec: .hevc), 29_859_840)
         XCTAssertLessThan(VideoEncodingPlan.averageBitrate(for: hd, frameRate: 30, codec: .hevc),
                           VideoEncodingPlan.averageBitrate(for: hd, frameRate: 30, codec: .h264))
         XCTAssertEqual(VideoEncodingPlan.averageBitrate(for: PixelSize(width: 16, height: 16), frameRate: 30, codec: .h264), VideoEncodingPlan.minimumBitrate)

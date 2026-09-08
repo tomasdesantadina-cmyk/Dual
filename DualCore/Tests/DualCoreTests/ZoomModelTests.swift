@@ -12,8 +12,8 @@ final class ZoomModelTests: XCTestCase {
         XCTAssertEqual(triple.displayFactor(for: 1), 0.5)
         XCTAssertEqual(triple.displayFactor(for: 2), 1)
         XCTAssertEqual(triple.displayFactor(for: 6), 3)
-        XCTAssertEqual(triple.presets, [0.5, 1, 3])
-        XCTAssertEqual(triple.maxZoom, 20, "display zoom capped at 10x")
+        XCTAssertEqual(triple.presets, [0.5, 1, 2, 3])
+        XCTAssertEqual(triple.maxZoom, 50, "display zoom capped at 25x")
     }
 
     func testDualWideOffersDigitalTwoX() {
@@ -23,7 +23,17 @@ final class ZoomModelTests: XCTestCase {
     func testWideTelePairWithoutUltraWide() {
         XCTAssertEqual(wideTele.wideFactor, 1)
         XCTAssertEqual(wideTele.presets, [1, 2])
-        XCTAssertEqual(wideTele.maxZoom, 10)
+        XCTAssertEqual(wideTele.maxZoom, 16)
+    }
+
+    func testIPhone17ProLayout() {
+        // Ultra-wide + wide + 4x tele: raw switch-overs at 2 and 8.
+        let pro = ZoomModel(minZoom: 1, maxZoom: 160, switchOverFactors: [2, 8], hasUltraWide: true)
+        XCTAssertEqual(pro.presets, [0.5, 1, 2, 4])
+        XCTAssertEqual(pro.label(forZoom: 8), "4x")
+        XCTAssertEqual(pro.nextPresetZoom(after: 2), 4)
+        XCTAssertEqual(pro.nextPresetZoom(after: 4), 8)
+        XCTAssertEqual(pro.maxZoom, 50)
     }
 
     func testSingleCamera() {
@@ -32,7 +42,8 @@ final class ZoomModelTests: XCTestCase {
     }
 
     func testPresetCycling() {
-        XCTAssertEqual(triple.nextPresetZoom(after: 2), 6)
+        XCTAssertEqual(triple.nextPresetZoom(after: 2), 4)
+        XCTAssertEqual(triple.nextPresetZoom(after: 4), 6)
         XCTAssertEqual(triple.nextPresetZoom(after: 6), 1)
         XCTAssertEqual(triple.nextPresetZoom(after: 1), 2)
         XCTAssertEqual(triple.nextPresetZoom(after: 4.2), 6)
@@ -40,7 +51,7 @@ final class ZoomModelTests: XCTestCase {
 
     func testClampingAndPinch() {
         XCTAssertEqual(triple.clamped(0.2), 1)
-        XCTAssertEqual(triple.clamped(500), 20)
+        XCTAssertEqual(triple.clamped(500), 50)
         XCTAssertEqual(triple.clamped(.nan), 2)
         XCTAssertEqual(triple.zoom(forPinchScale: 2, startZoom: 2), 4)
         XCTAssertEqual(triple.zoom(forPinchScale: 0, startZoom: 2), 2)
@@ -61,6 +72,6 @@ final class ZoomModelTests: XCTestCase {
         let odd = ZoomModel(minZoom: .nan, maxZoom: .infinity, switchOverFactors: [-1, .nan, 2], hasUltraWide: true)
         XCTAssertEqual(odd.minZoom, 1)
         XCTAssertEqual(odd.switchOverFactors, [2])
-        XCTAssertEqual(odd.maxZoom, 20)
+        XCTAssertEqual(odd.maxZoom, 50)
     }
 }

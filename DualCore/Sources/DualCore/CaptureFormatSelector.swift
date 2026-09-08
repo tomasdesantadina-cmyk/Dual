@@ -41,19 +41,30 @@ public struct CaptureFormatRequirements: Hashable, Sendable {
     /// Sensor pixel count above which a steep penalty applies, so the 1080p tier
     /// never streams a 12 MP format when a smaller one would do.
     public var softMaxPixels: Int
+    /// Whether making frames upright rotates them by 90 or 270 degrees (true for
+    /// landscape-mounted sensors such as every rear camera; false for the
+    /// portrait-mounted square front sensor on iPhone 17).
+    public var uprightSwapsDimensions: Bool
 
     public init(targetFrameRate: Double = 30,
                 quality: VideoQuality = .hd1080,
                 pair: FormatPair = .portraitAndLandscape,
                 maxLongSide: Int = 4096,
                 allowedPixelFormats: Set<String> = ["420v", "420f"],
-                softMaxPixels: Int? = nil) {
+                softMaxPixels: Int? = nil,
+                uprightSwapsDimensions: Bool = true) {
         self.targetFrameRate = targetFrameRate
         self.quality = quality
         self.pair = pair
         self.maxLongSide = maxLongSide
         self.allowedPixelFormats = allowedPixelFormats
         self.softMaxPixels = softMaxPixels ?? CaptureFormatRequirements.defaultSoftMaxPixels(for: quality)
+        self.uprightSwapsDimensions = uprightSwapsDimensions
+    }
+
+    /// The frame size the pipeline will see for a candidate once it is upright.
+    public func uprightSize(of candidate: CaptureFormatCandidate) -> PixelSize {
+        uprightSwapsDimensions ? candidate.portraitSize : candidate.sensorSize
     }
 
     /// 1080p is happy with a 5 MP sensor frame; 4K needs the 12 MP formats.
@@ -100,7 +111,7 @@ public enum CaptureFormatSelector {
         guard requirements.allowedPixelFormats.contains(candidate.pixelFormat) else { return nil }
         guard candidate.sensorSize.longSide <= requirements.maxLongSide else { return nil }
 
-        let plan = FramingPlanner.plan(sourceSize: candidate.portraitSize,
+        let plan = FramingPlanner.plan(sourceSize: requirements.uprightSize(of: candidate),
                                        pair: requirements.pair,
                                        quality: requirements.quality)
         var score = 0.0
@@ -109,10 +120,15 @@ public enum CaptureFormatSelector {
         let upscale = max(0, plan.maxScaleFactor - 1)
         score -= upscale * 100
 
-        // 3. Aspect preference: 4:3 first, then anything squarer than 16:9.
-        if AspectRatio.landscape4x3.matches(candidate.sensorSize) {
+        // 3. Aspect preference: 4:3 (or 3:4 / square) first, then anything squarer than 16:9.
+        let upright = requirements.uprightSize(of: candidate)
+        let uprightAspect = upright.aspectValue
+        if AspectRatio.landscape4x3.matches(candidate.sensorSize)
+            || AspectRatio.portrait3x4.matches(upright)
+            || AspectRatio.square.matches(upright) {
             score += 50
-        } else if candidate.sensorSize.aspectValue < AspectRatio.landscape16x9.value - 0.01 {
+        } else if candidate.sensorSize.aspectValue < AspectRatio.landscape16x9.value - 0.01
+                    && uprightAspect < AspectRatio.landscape16x9.value - 0.01 {
             score += 25
         }
 

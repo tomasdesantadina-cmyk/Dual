@@ -41,6 +41,10 @@ final class CaptureEngine: NSObject {
         case snapshotCaptured(Data)
         /// Camera system pressure (thermal, power). Critical means recording was stopped.
         case pressureChanged(isSerious: Bool, isCritical: Bool)
+        /// The user picked a filter with the Camera Control button (index into VideoFilterPreset.all).
+        case filterPicked(Int)
+        /// The Camera Control overlay is covering the screen (true) or went away (false).
+        case captureControlsFullscreen(Bool)
         case interrupted(String)
         case interruptionEnded
         case failed(String)
@@ -70,7 +74,9 @@ final class CaptureEngine: NSObject {
     static let backCameraTypes: [AVCaptureDevice.DeviceType] = [
         .builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera, .builtInWideAngleCamera,
     ]
-    static let frontCameraTypes: [AVCaptureDevice.DeviceType] = [.builtInWideAngleCamera]
+    /// The iPhone 17 family's square Center Stage front camera is exposed as an
+    /// ultra-wide device, earlier phones as a wide-angle one.
+    static let frontCameraTypes: [AVCaptureDevice.DeviceType] = [.builtInWideAngleCamera, .builtInUltraWideCamera]
     static let stabilizationMode: AVCaptureVideoStabilizationMode = .standard
 
     // MARK: - Public surface
@@ -107,6 +113,10 @@ final class CaptureEngine: NSObject {
     private var formatLabel = ""
     private var sessionTransform: UprightTransform = .rotateClockwise
     private var isExposureFocusLocked = false
+    private var lastEmittedZoom = 0.0
+    /// The Camera Control filter picker (AVCaptureIndexPicker on iOS 18+), kept untyped
+    /// so the property itself needs no availability annotation.
+    private var filterControl: AnyObject?
     /// Clockwise degrees that make raw frames upright in the portrait UI. Defaults
     /// to 90 (correct for every iPhone up to the 16 family) and is refined by the
     /// rotation coordinator once the preview layer is on screen.
@@ -117,6 +127,7 @@ final class CaptureEngine: NSObject {
     private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
     private var rotationObservation: NSKeyValueObservation?
     private var pressureObservation: NSKeyValueObservation?
+    private var zoomObservation: NSKeyValueObservation?
 
     // MARK: - State owned by dataQueue
 
@@ -186,6 +197,9 @@ final class CaptureEngine: NSObject {
             self.dataQueue.async {
                 self.activeSettings = newSettings
                 self.refreshCachedPlan()
+            }
+            if old.filterID != newSettings.filterID {
+                self.syncFilterControl(to: newSettings.filterID)
             }
             let formatChanged = old.quality != newSettings.quality
                 || old.frameRate != newSettings.frameRate
@@ -499,6 +513,7 @@ final class CaptureEngine: NSObject {
         videoDevice = device
         isExposureFocusLocked = false
         installObservers(for: device)
+        installCaptureControls(for: device)
 
         if audioInput == nil,
            CameraAuthorization.status(for: .audio) == .authorized,
@@ -549,6 +564,7 @@ final class CaptureEngine: NSObject {
         }
 
         var requirements = settings.formatRequirements
+        requirements.uprightSwapsDimensions = UprightTransform(rotationDegrees: uprightRotationDegrees, mirrored: false).swapsDimensions
         var chosen = CaptureFormatSelector.select(from: candidates, requirements: requirements)
         if chosen == nil {
             requirements.targetFrameRate = 30
@@ -694,7 +710,61 @@ final class CaptureEngine: NSObject {
             self.pressureObservation = device.observe(\.systemPressureState, options: [.initial, .new]) { [weak self] device, _ in
                 self?.systemPressureDidChange(to: device.systemPressureState.level)
             }
+
+            // Zoom: ramps and the Camera Control slider change the factor outside setZoom.
+            self.zoomObservation = nil
+            self.zoomObservation = device.observe(\.videoZoomFactor, options: [.new]) { [weak self] device, _ in
+                self?.zoomFactorDidChange(to: Double(device.videoZoomFactor))
+            }
         }
+    }
+
+    private func zoomFactorDidChange(to zoom: Double) {
+        sessionQueue.async {
+            guard abs(zoom - self.lastEmittedZoom) > 0.01 else { return }
+            self.lastEmittedZoom = zoom
+            self.emit(.zoomChanged(zoom))
+        }
+    }
+
+    // MARK: - Camera Control (iPhone 16 and later, iOS 18+)
+
+    /// Adds the system zoom slider and a filter picker to the Camera Control button.
+    /// Controls may be added while the session runs; a delegate is required for
+    /// them to become active. sessionQueue only.
+    private func installCaptureControls(for device: AVCaptureDevice) {
+        guard #available(iOS 18.0, *), session.supportsControls else { return }
+        for control in session.controls {
+            session.removeControl(control)
+        }
+        filterControl = nil
+
+        let zoomSlider = AVCaptureSystemZoomSlider(device: device)
+        if session.canAddControl(zoomSlider) {
+            session.addControl(zoomSlider)
+        }
+
+        let titles = VideoFilterPreset.all.map { $0.displayName }
+        let picker = AVCaptureIndexPicker("Filter", symbolName: "camera.filters", localizedIndexTitles: titles)
+        picker.selectedIndex = VideoFilterPreset.all.firstIndex(where: { $0.id == settings.filterID }) ?? 0
+        picker.setActionQueue(sessionQueue) { [weak self] index in
+            self?.emit(.filterPicked(index))
+        }
+        if session.canAddControl(picker) {
+            session.addControl(picker)
+            filterControl = picker
+        }
+
+        session.setControlsDelegate(self, queue: sessionQueue)
+    }
+
+    /// sessionQueue only.
+    private func syncFilterControl(to filterID: String) {
+        guard #available(iOS 18.0, *),
+              let picker = filterControl as? AVCaptureIndexPicker,
+              let index = VideoFilterPreset.all.firstIndex(where: { $0.id == filterID }),
+              picker.selectedIndex != index else { return }
+        picker.selectedIndex = index
     }
 
     private func rotationAngleDidChange(to degrees: Int) {
@@ -900,6 +970,25 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         if output === videoOutput {
             droppedFrameCount += 1
         }
+    }
+}
+
+// MARK: - Camera Control delegate
+
+@available(iOS 18.0, *)
+extension CaptureEngine: AVCaptureSessionControlsDelegate {
+    func sessionControlsDidBecomeActive(_ session: AVCaptureSession) {}
+
+    func sessionControlsWillEnterFullscreenAppearance(_ session: AVCaptureSession) {
+        emit(.captureControlsFullscreen(true))
+    }
+
+    func sessionControlsWillExitFullscreenAppearance(_ session: AVCaptureSession) {
+        emit(.captureControlsFullscreen(false))
+    }
+
+    func sessionControlsDidBecomeInactive(_ session: AVCaptureSession) {
+        emit(.captureControlsFullscreen(false))
     }
 }
 

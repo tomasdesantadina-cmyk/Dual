@@ -12,6 +12,7 @@ struct CameraScreen: View {
             VStack(spacing: 0) {
                 TopBar(model: model)
                     .padding(.top, 4)
+                    .opacity(model.isCameraControlFullscreen ? 0.25 : 1)
 
                 previews
                     .padding(.horizontal, 16)
@@ -28,13 +29,21 @@ struct CameraScreen: View {
                 ControlTray(model: model)
                     .padding(.horizontal, 10)
                     .padding(.bottom, 6)
+                    .opacity(model.isCameraControlFullscreen ? 0.25 : 1)
             }
+            .animation(.easeInOut(duration: 0.2), value: model.isCameraControlFullscreen)
 
             if model.snapshotFlash {
                 Color.white
                     .ignoresSafeArea()
                     .opacity(0.6)
                     .allowsHitTesting(false)
+            }
+        }
+        .background {
+            // Camera Control / Action / volume buttons start and stop recording.
+            CaptureEventsView(isEnabled: model.isSessionReady && model.phase != .saving) {
+                model.hardwareCaptureButtonPressed()
             }
         }
         .overlay(alignment: .topTrailing) {

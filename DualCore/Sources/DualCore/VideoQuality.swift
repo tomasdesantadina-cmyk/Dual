@@ -44,11 +44,12 @@ public enum VideoCodec: String, CaseIterable, Codable, Sendable, Identifiable {
     public var id: String { rawValue }
     public var displayName: String { rawValue }
 
-    /// Approximate bits per pixel per frame that gives good quality for this codec.
+    /// Approximate bits per pixel per frame, tuned to land near the system camera's
+    /// rates (about 10 Mbps for 1080p30 H.264, 30 Mbps for 4K30 HEVC).
     var bitsPerPixel: Double {
         switch self {
-        case .h264: return 0.14
-        case .hevc: return 0.085
+        case .h264: return 0.16
+        case .hevc: return 0.12
         }
     }
 }

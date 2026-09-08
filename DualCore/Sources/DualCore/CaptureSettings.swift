@@ -16,7 +16,7 @@ public struct CaptureSettings: Hashable, Codable, Sendable {
 
     public init(quality: VideoQuality = .hd1080,
                 frameRate: Int = 30,
-                codec: VideoCodec = .h264,
+                codec: VideoCodec = .hevc,
                 pair: FormatPair = .portraitAndLandscape,
                 filterID: String = VideoFilterPreset.passthrough.id,
                 landscapeOnTop: Bool = false,

@@ -1,5 +1,34 @@
 import SwiftUI
 
+extension View {
+    /// Liquid Glass (iOS 26 and later) with a translucent fill on earlier systems.
+    /// Glass belongs on controls that float over content, never on other glass.
+    @ViewBuilder
+    func adaptiveGlass<S: Shape>(in shape: S, fallback: Color, tint: Color? = nil, interactive: Bool = false) -> some View {
+        if #available(iOS 26.0, *) {
+            self.glassEffect(.regular.tint(tint).interactive(interactive), in: shape)
+        } else {
+            self.background(shape.fill(fallback))
+        }
+    }
+}
+
+/// Groups neighbouring glass controls so they render together and can merge.
+struct GlassGroup<Content: View>: View {
+    var spacing: CGFloat = 12
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: spacing) {
+                content()
+            }
+        } else {
+            content()
+        }
+    }
+}
+
 /// Capsule-shaped control used for zoom, format and filter in the tray.
 struct Chip: View {
     let title: String
@@ -23,7 +52,10 @@ struct Chip: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(Capsule().fill(Color.white.opacity(isActive ? 0.30 : 0.14)))
+            .adaptiveGlass(in: Capsule(),
+                           fallback: Color.white.opacity(isActive ? 0.30 : 0.14),
+                           tint: isActive ? Color.white.opacity(0.35) : nil,
+                           interactive: true)
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
@@ -45,7 +77,10 @@ struct RoundIconButton: View {
                 .font(.system(size: size * 0.42, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: size, height: size)
-                .background(Circle().fill(Color.white.opacity(isActive ? 0.32 : 0.14)))
+                .adaptiveGlass(in: Circle(),
+                               fallback: Color.white.opacity(isActive ? 0.32 : 0.14),
+                               tint: isActive ? Color.white.opacity(0.35) : nil,
+                               interactive: true)
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
@@ -65,7 +100,9 @@ struct TimerPill: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 14)
             .padding(.vertical, 6)
-            .background(Capsule().fill(isRecording ? Color.red : Color.white.opacity(0.14)))
+            .adaptiveGlass(in: Capsule(),
+                           fallback: isRecording ? Color.red : Color.white.opacity(0.14),
+                           tint: isRecording ? Color.red : nil)
             .animation(.easeInOut(duration: 0.2), value: isRecording)
     }
 }
@@ -107,14 +144,11 @@ struct SnapshotButton: View {
 
     var body: some View {
         Button(action: action) {
-            ZStack {
-                Circle()
-                    .fill(Color.white.opacity(0.22))
-                    .frame(width: 58, height: 58)
-                Circle()
-                    .fill(Color.white.opacity(0.7))
-                    .frame(width: 38, height: 38)
-            }
+            Circle()
+                .fill(Color.white.opacity(0.7))
+                .frame(width: 38, height: 38)
+                .frame(width: 58, height: 58)
+                .adaptiveGlass(in: Circle(), fallback: Color.white.opacity(0.22), interactive: true)
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
