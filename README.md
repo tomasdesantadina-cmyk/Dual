@@ -94,9 +94,11 @@ AVCaptureSession (4:3 sensor format, 30 fps)
   pixels. From a 1944x2592 upright frame: portrait 1458x2592, landscape
   1944x1092.
 - **Orientation**: raw frames stay in the sensor's native orientation and are
-  rotated on the GPU. The rotation comes from
-  `AVCaptureDevice.RotationCoordinator`, so phones whose sensors are mounted
-  differently still record upright video.
+  rotated on the GPU. How far to rotate follows the sensor's mounting, read
+  from the shape of its buffers, so a portrait-mounted sensor is left alone and
+  a landscape one gets a quarter turn. It deliberately does not follow how the
+  phone is tilted: the framing stays fixed, the way the two preview panes show
+  it.
 - **Sync**: both writers start their session at the timestamp of the first
   recorded frame, receive the same frames and audio buffers, and end at the
   same timestamp, so durations match to the frame.
@@ -118,9 +120,9 @@ project.yml            XcodeGen fallback description of the project
 - The zoom chip follows the system camera: 0.5x, 1x, 2x, 4x; pinch or the
   Camera Control slider reach 25x.
 - The front Center Stage camera is a square sensor mounted in portrait and is
-  exposed as an ultra-wide device. Discovery, the rotation coordinator and the
-  format selector all handle that, so portrait clips from it are upright and
-  both crops use the full sensor.
+  exposed as an ultra-wide device. Discovery, the upright rotation and the
+  format selector all handle that, so selfie clips are upright and both crops
+  use the full sensor.
 - Defaults are HEVC at 1080p30 (about 7.5 Mbps per clip). 4K30 HEVC runs at
   about 30 Mbps per clip; the A19 Pro handles two 4K encodes comfortably, but
   the 4:3 sensor formats top out at 3024 px on the short side, so 4K clips are
@@ -131,7 +133,8 @@ project.yml            XcodeGen fallback description of the project
 ## Known limits
 
 - Portrait use only. The UI is locked to portrait and the framings assume the
-  phone is held upright.
+  phone is held upright. Tilting the phone does not rotate the recording, by
+  design: the clips keep the framing the previews show.
 - Photo mode is not included; the snapshot button saves a still from the video
   stream instead.
 - Finished clips are moved straight into Photos (no in-app player), so nothing
