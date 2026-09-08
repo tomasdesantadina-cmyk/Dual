@@ -16,15 +16,16 @@ on screen while you record.
   filter.
 - Zoom chip (0.5x / 1x / 2x / 3x depending on the phone) plus pinch to zoom.
 - Filters (Vivid, Warm, Chrome, Fade, Instant, Transfer, Mono, Noir).
-- Torch, flip camera, tap to focus and expose, snapshot button that saves a
-  still while recording.
+- Torch, flip camera, tap to focus and expose, long-press for AE/AF lock,
+  snapshot button that saves a still while recording.
 - Recording timer driven by the frames actually written, discard
   confirmation, gallery thumbnail of the last take and an "Open Photos"
   shortcut.
 - Settings: 1080p or 4K, 24/30/60 fps, H.264 or HEVC, layout swap, mirrored
   front camera.
-- Thermal guard: warns when the phone gets hot and stops recording at the
-  critical level.
+- Thermal guard: warns when the phone or camera gets hot and stops recording
+  at the critical level. Movie fragments every 2 seconds keep a take
+  readable if the app is killed mid-recording.
 
 ## Requirements
 

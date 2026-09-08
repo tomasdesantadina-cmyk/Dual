@@ -46,6 +46,8 @@ final class CameraModel {
     var isShowingLastTake = false
     var isConfirmingDiscard = false
     var snapshotFlash = false
+    var isExposureFocusLocked = false
+    var pressureWarning: String?
 
     var isRecording: Bool { phase == .recording }
     var isBusy: Bool { phase == .saving || !isSessionReady }
@@ -65,6 +67,7 @@ final class CameraModel {
     private var isPinching = false
     private var transform: UprightTransform = .rotateClockwise
     private var thermalObserver: NSObjectProtocol?
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
 
     init() {
         let store = SettingsStore()
@@ -129,6 +132,8 @@ final class CameraModel {
             }
         case .background:
             if phase == .recording {
+                // Keep running long enough to finalise and save the clips.
+                beginBackgroundTask()
                 engine.stopRecording()
             }
             engine.stop()
@@ -136,6 +141,21 @@ final class CameraModel {
         default:
             break
         }
+    }
+
+    private func beginBackgroundTask() {
+        guard backgroundTask == .invalid else { return }
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "FinishRecording") { [weak self] in
+            MainActor.assumeIsolated {
+                self?.endBackgroundTask()
+            }
+        }
+    }
+
+    private func endBackgroundTask() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
     }
 
     func openSystemSettings() {
@@ -185,6 +205,12 @@ final class CameraModel {
     func toggleTorch() {
         guard hasTorch else { return }
         engine.setTorch(!isTorchOn)
+    }
+
+    /// Long press on a preview: freeze focus and exposure (tap to release).
+    func toggleExposureFocusLock() {
+        guard isSessionReady else { return }
+        engine.setExposureFocusLocked(!isExposureFocusLocked)
     }
 
     func cycleZoomPreset() {
@@ -308,6 +334,18 @@ final class CameraModel {
         case .torchChanged(let isOn):
             isTorchOn = isOn
 
+        case .exposureFocusLockChanged(let isLocked):
+            isExposureFocusLocked = isLocked
+
+        case .pressureChanged(let isSerious, let isCritical):
+            if isCritical {
+                pressureWarning = "The camera is overheating. Recording was stopped."
+            } else if isSerious {
+                pressureWarning = "The camera is getting hot. Consider a short break."
+            } else {
+                pressureWarning = nil
+            }
+
         case .recordingStarted:
             phase = .recording
             elapsedText = RecordingClock.timecode(seconds: 0)
@@ -324,6 +362,7 @@ final class CameraModel {
                 Task { await save(clips) }
             case .failure(let error):
                 phase = .idle
+                endBackgroundTask()
                 if let recorderError = error as? DualRecorder.RecorderError, case .nothingRecorded = recorderError {
                     // Discarded or empty take: nothing to report.
                 } else {
@@ -353,7 +392,8 @@ final class CameraModel {
     }
 
     /// Generates the thumbnail first (the files move into Photos and are gone
-    /// afterwards), then hands both clips to the library.
+    /// afterwards), then hands both clips to the library. On failure the files
+    /// stay on disk so the save can be retried from the last-take sheet.
     private func save(_ clips: [DualRecorder.Clip]) async {
         let urls = clips.map { $0.url }
         var thumbnail: UIImage?
@@ -362,19 +402,44 @@ final class CameraModel {
             thumbnail = await ThumbnailMaker.thumbnail(for: first)
             duration = await ThumbnailMaker.duration(of: first)
         }
-        var saved = true
         do {
             try await PhotoLibrarySaver.saveVideos(at: urls)
+            lastTake = LastTake(outputs: clips.map { $0.framing },
+                                thumbnail: thumbnail,
+                                date: Date(),
+                                duration: duration,
+                                savedToPhotos: true,
+                                pendingURLs: [])
+            TakeStorage.removeAllTakes()
         } catch {
-            saved = false
+            lastTake = LastTake(outputs: clips.map { $0.framing },
+                                thumbnail: thumbnail,
+                                date: Date(),
+                                duration: duration,
+                                savedToPhotos: false,
+                                pendingURLs: urls)
             alert = AlertMessage(title: "Could not save to Photos", message: error.localizedDescription)
         }
-        lastTake = LastTake(outputs: clips.map { $0.framing },
-                            thumbnail: thumbnail,
-                            date: Date(),
-                            duration: duration,
-                            savedToPhotos: saved)
-        TakeStorage.removeAllTakes()
+        phase = .idle
+        endBackgroundTask()
+    }
+
+    /// Retries a failed Photos save for the last take.
+    func retrySavingLastTake() async {
+        guard let take = lastTake, !take.pendingURLs.isEmpty, phase == .idle else { return }
+        phase = .saving
+        do {
+            try await PhotoLibrarySaver.saveVideos(at: take.pendingURLs)
+            lastTake = LastTake(outputs: take.outputs,
+                                thumbnail: take.thumbnail,
+                                date: take.date,
+                                duration: take.duration,
+                                savedToPhotos: true,
+                                pendingURLs: [])
+            TakeStorage.removeAllTakes()
+        } catch {
+            alert = AlertMessage(title: "Could not save to Photos", message: error.localizedDescription)
+        }
         phase = .idle
     }
 }

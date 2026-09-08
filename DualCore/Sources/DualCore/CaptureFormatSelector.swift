@@ -59,7 +59,7 @@ public struct CaptureFormatRequirements: Hashable, Sendable {
     /// 1080p is happy with a 5 MP sensor frame; 4K needs the 12 MP formats.
     public static func defaultSoftMaxPixels(for quality: VideoQuality) -> Int {
         switch quality {
-        case .hd1080: return 6_500_000
+        case .hd1080: return 6_000_000
         case .uhd4K: return 13_000_000
         }
     }
@@ -72,7 +72,8 @@ public struct CaptureFormatRequirements: Hashable, Sendable {
 ///   3. prefer 4:3 sensors (the landscape crop gets a wider field of view);
 ///   4. among the rest, prefer fewer pixels (cooler, fewer dropped frames), and
 ///      penalise formats over the tier's pixel budget steeply;
-///   5. small bonus for binned formats (better low light).
+///   5. small bonus for binned formats (better low light);
+///   6. tiny bonus for full-range 4:2:0 to break ties between identical sizes.
 public enum CaptureFormatSelector {
 
     public static func select(from candidates: [CaptureFormatCandidate],
@@ -119,10 +120,13 @@ public enum CaptureFormatSelector {
         let megapixels = Double(candidate.sensorSize.pixelCount) / 1_000_000
         score -= megapixels * 2
         let excess = Double(candidate.sensorSize.pixelCount - requirements.softMaxPixels) / 1_000_000
-        if excess > 0 { score -= excess * 8 }
+        if excess > 0 { score -= excess * 12 }
 
         // 5. Binned bonus.
         if candidate.isBinned { score += 5 }
+
+        // 6. Tie-break between otherwise identical formats: prefer full-range 4:2:0.
+        if candidate.pixelFormat == "420f" { score += 0.5 }
 
         return score
     }

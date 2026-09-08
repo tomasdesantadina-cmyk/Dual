@@ -9,17 +9,18 @@ struct PreviewView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> PreviewHostView {
         let view = PreviewHostView()
-        view.attach(target.layer)
+        view.attach(target)
         return view
     }
 
     func updateUIView(_ uiView: PreviewHostView, context: Context) {
-        uiView.attach(target.layer)
+        uiView.attach(target)
     }
 }
 
 final class PreviewHostView: UIView {
     private weak var displayLayer: AVSampleBufferDisplayLayer?
+    private weak var target: PreviewTarget?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -33,13 +34,26 @@ final class PreviewHostView: UIView {
         clipsToBounds = true
     }
 
-    func attach(_ newLayer: AVSampleBufferDisplayLayer) {
+    func attach(_ newTarget: PreviewTarget) {
+        target = newTarget
+        let newLayer = newTarget.layer
         guard displayLayer !== newLayer else { return }
         displayLayer?.removeFromSuperlayer()
         newLayer.removeFromSuperlayer()
         layer.addSublayer(newLayer)
         displayLayer = newLayer
         setNeedsLayout()
+        if window != nil {
+            newTarget.hostIsOnScreen = true
+            newTarget.onScreenChanged?(true)
+        }
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        let onScreen = window != nil
+        target?.hostIsOnScreen = onScreen
+        target?.onScreenChanged?(onScreen)
     }
 
     override func layoutSubviews() {
@@ -72,6 +86,12 @@ struct PreviewPane: View {
                             model.focus(atPreviewPoint: point, in: output, indicatorLocation: location, paneID: aspect.label)
                         }
                 )
+                .simultaneousGesture(
+                    LongPressGesture(minimumDuration: 0.5)
+                        .onEnded { _ in
+                            model.toggleExposureFocusLock()
+                        }
+                )
                 .overlay {
                     if let indicator = model.focusIndicator, indicator.paneID == aspect.label {
                         FocusReticle()
@@ -79,6 +99,17 @@ struct PreviewPane: View {
                             .transition(.opacity)
                     }
                 }
+        }
+        .overlay(alignment: .top) {
+            if model.isExposureFocusLocked {
+                Text("AE/AF LOCK")
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.yellow))
+                    .padding(.top, 8)
+            }
         }
         .aspectRatio(CGFloat(aspect.value), contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))

@@ -11,6 +11,8 @@ struct LastTake: Identifiable {
     let date: Date
     let duration: Double
     let savedToPhotos: Bool
+    /// Clip files still on disk because the Photos save failed; empty otherwise.
+    let pendingURLs: [URL]
 }
 
 struct AlertMessage: Identifiable {

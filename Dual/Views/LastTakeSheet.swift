@@ -2,6 +2,7 @@ import DualCore
 import SwiftUI
 
 struct LastTakeSheet: View {
+    let model: CameraModel
     let take: LastTake
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
@@ -50,6 +51,21 @@ struct LastTakeSheet: View {
                         Text(take.savedToPhotos ? "Both clips were added to Photos." : "The clips could not be added to Photos.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                    }
+
+                    if !take.pendingURLs.isEmpty {
+                        Button {
+                            Task {
+                                await model.retrySavingLastTake()
+                            }
+                        } label: {
+                            Label("Retry saving to Photos", systemImage: "arrow.clockwise")
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.red)
+                        .disabled(model.phase == .saving)
                     }
 
                     Button {

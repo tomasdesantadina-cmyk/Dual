@@ -78,8 +78,14 @@ final class CaptureFormatSelectorTests: XCTestCase {
         XCTAssertEqual(chosen4K?.index, 1)
     }
 
+    func testWithoutFiveMegapixelFormat1080pPicksLightFormat() {
+        let withoutFiveMP = iphoneFormats.filter { $0.index != 7 }
+        let chosen = CaptureFormatSelector.select(from: withoutFiveMP, requirements: CaptureFormatRequirements(targetFrameRate: 30, quality: .hd1080))
+        XCTAssertEqual(chosen?.index, 6, "expected 1920x1440@30 over the 8 MP 3264x2448, got \(String(describing: chosen))")
+    }
+
     func testDefaultPixelBudgets() {
-        XCTAssertEqual(CaptureFormatRequirements(quality: .hd1080).softMaxPixels, 6_500_000)
+        XCTAssertEqual(CaptureFormatRequirements(quality: .hd1080).softMaxPixels, 6_000_000)
         XCTAssertEqual(CaptureFormatRequirements(quality: .uhd4K).softMaxPixels, 13_000_000)
         XCTAssertEqual(CaptureFormatRequirements(softMaxPixels: 1).softMaxPixels, 1)
     }

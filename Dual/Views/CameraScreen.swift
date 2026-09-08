@@ -45,7 +45,7 @@ struct CameraScreen: View {
             .padding(.top, 82)
         }
         .overlay(alignment: .top) {
-            if let message = model.interruptionMessage {
+            if let message = model.interruptionMessage ?? model.pressureWarning {
                 Text(message)
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(.white)
@@ -58,6 +58,7 @@ struct CameraScreen: View {
         }
         .animation(.easeInOut(duration: 0.2), value: model.isShowingFilterPicker)
         .animation(.easeInOut(duration: 0.2), value: model.interruptionMessage)
+        .animation(.easeInOut(duration: 0.2), value: model.pressureWarning)
         .alert(model.alert?.title ?? "", isPresented: isShowingAlert) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -74,7 +75,7 @@ struct CameraScreen: View {
         }
         .sheet(isPresented: $model.isShowingLastTake) {
             if let take = model.lastTake {
-                LastTakeSheet(take: take)
+                LastTakeSheet(model: model, take: take)
             }
         }
         .onAppear {

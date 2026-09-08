@@ -9,9 +9,9 @@ import UIKit
 
 /// Owns the AVCaptureSession and the frame pipeline. Public methods are safe to
 /// call from any thread; work is serialised onto two queues:
-///  - sessionQueue: session/device configuration (slow, blocking calls)
+///  - sessionQueue: session/device configuration (slow, blocking calls), writer creation
 ///  - dataQueue:    per-frame processing, previews and recording
-/// Results are reported through `eventHandler` on the main queue.
+/// Results are reported through `eventHandler` on the main actor.
 final class CaptureEngine: NSObject {
 
     // MARK: - Types
@@ -33,11 +33,14 @@ final class CaptureEngine: NSObject {
         case transformChanged(UprightTransform)
         case zoomChanged(Double)
         case torchChanged(Bool)
+        case exposureFocusLockChanged(Bool)
         case recordingStarted
         /// Seconds of video written so far, reported a few times per second.
         case recordingProgress(Double)
         case recordingFinished(Result<[DualRecorder.Clip], Error>)
         case snapshotCaptured(Data)
+        /// Camera system pressure (thermal, power). Critical means recording was stopped.
+        case pressureChanged(isSerious: Bool, isCritical: Bool)
         case interrupted(String)
         case interruptionEnded
         case failed(String)
@@ -60,6 +63,15 @@ final class CaptureEngine: NSObject {
             }
         }
     }
+
+    /// Back-camera device types in preference order. Virtual devices give the
+    /// 0.5x / 2x / 3x lens switching users expect; ZoomModel handles their zoom
+    /// factor quirks. Use [.builtInWideAngleCamera] to force a single lens.
+    static let backCameraTypes: [AVCaptureDevice.DeviceType] = [
+        .builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera, .builtInWideAngleCamera,
+    ]
+    static let frontCameraTypes: [AVCaptureDevice.DeviceType] = [.builtInWideAngleCamera]
+    static let stabilizationMode: AVCaptureVideoStabilizationMode = .standard
 
     // MARK: - Public surface
 
@@ -90,10 +102,17 @@ final class CaptureEngine: NSObject {
     private var formatPlan: FramingPlan?
     private var formatLabel = ""
     private var sessionTransform: UprightTransform = .rotateClockwise
+    private var isExposureFocusLocked = false
+    /// Clockwise degrees that make raw frames upright in the portrait UI. Defaults
+    /// to 90 (correct for every iPhone up to the 16 family) and is refined by the
+    /// rotation coordinator once the preview layer is on screen.
+    private var uprightRotationDegrees = 90
+
+    // MARK: - State owned by the main queue
+
     private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
     private var rotationObservation: NSKeyValueObservation?
-    /// Clockwise degrees that make raw frames upright in the portrait UI (from the coordinator).
-    private var uprightRotationDegrees = 90
+    private var pressureObservation: NSKeyValueObservation?
 
     // MARK: - State owned by dataQueue
 
@@ -103,6 +122,8 @@ final class CaptureEngine: NSObject {
     private var pendingOrientation: CGImagePropertyOrientation?
     private var cachedPlan: FramingPlan?
     private var recorder: DualRecorder?
+    private var isStartingRecorder = false
+    private var cancelWhenStarted = false
     private var snapshotRequested = false
     private var lastReportedDuration = 0.0
     private(set) var droppedFrameCount = 0
@@ -188,6 +209,7 @@ final class CaptureEngine: NSObject {
             do {
                 try self.configureSession()
                 self.emit(.torchChanged(false))
+                self.emit(.exposureFocusLockChanged(false))
                 self.emit(.configured(self.makeConfiguration()))
             } catch {
                 self.emit(.failed(error.localizedDescription))
@@ -221,7 +243,7 @@ final class CaptureEngine: NSObject {
 
     func setTorch(_ enabled: Bool) {
         sessionQueue.async {
-            guard let device = self.videoDevice, device.hasTorch else {
+            guard let device = self.videoDevice, device.hasTorch, device.isTorchAvailable else {
                 self.emit(.torchChanged(false))
                 return
             }
@@ -229,7 +251,7 @@ final class CaptureEngine: NSObject {
                 try device.lockForConfiguration()
                 if enabled, device.isTorchModeSupported(.on) {
                     device.torchMode = .on
-                } else {
+                } else if device.isTorchModeSupported(.off) {
                     device.torchMode = .off
                 }
                 let isOn = device.torchMode == .on
@@ -242,6 +264,7 @@ final class CaptureEngine: NSObject {
     }
 
     /// `point` is in the camera's native coordinate space (see PointMapper).
+    /// Tapping to focus also releases an AE/AF lock.
     func focusAndExpose(atDevicePoint point: CGPoint) {
         sessionQueue.async {
             guard let device = self.videoDevice else { return }
@@ -257,15 +280,50 @@ final class CaptureEngine: NSObject {
                 }
                 device.isSubjectAreaChangeMonitoringEnabled = true
                 device.unlockForConfiguration()
+                if self.isExposureFocusLocked {
+                    self.isExposureFocusLocked = false
+                    self.emit(.exposureFocusLockChanged(false))
+                }
             } catch {
                 // Focus is best-effort.
             }
         }
     }
 
-    private func resetFocusToContinuous() {
+    /// Freezes (or releases) focus and exposure, like a long press in the system camera.
+    func setExposureFocusLocked(_ locked: Bool) {
         sessionQueue.async {
             guard let device = self.videoDevice else { return }
+            do {
+                try device.lockForConfiguration()
+                if locked {
+                    if device.isFocusModeSupported(.locked) {
+                        device.focusMode = .locked
+                    }
+                    if device.isExposureModeSupported(.locked) {
+                        device.exposureMode = .locked
+                    }
+                    device.isSubjectAreaChangeMonitoringEnabled = false
+                } else {
+                    if device.isFocusModeSupported(.continuousAutoFocus) {
+                        device.focusMode = .continuousAutoFocus
+                    }
+                    if device.isExposureModeSupported(.continuousAutoExposure) {
+                        device.exposureMode = .continuousAutoExposure
+                    }
+                }
+                device.unlockForConfiguration()
+                self.isExposureFocusLocked = locked
+                self.emit(.exposureFocusLockChanged(locked))
+            } catch {
+                self.emit(.exposureFocusLockChanged(self.isExposureFocusLocked))
+            }
+        }
+    }
+
+    private func resetFocusToContinuous() {
+        sessionQueue.async {
+            guard let device = self.videoDevice, !self.isExposureFocusLocked else { return }
             do {
                 try device.lockForConfiguration()
                 let centre = CGPoint(x: 0.5, y: 0.5)
@@ -287,38 +345,70 @@ final class CaptureEngine: NSObject {
 
     // MARK: - Recording
 
+    /// Creates the two writers on the session queue (encoder start-up is slow),
+    /// then installs them on the data queue. A stop that arrives meanwhile
+    /// cancels the take.
     func startRecording() {
         dataQueue.async {
-            guard self.recorder == nil else { return }
+            guard self.recorder == nil, !self.isStartingRecorder else { return }
             guard let plan = self.cachedPlan else {
                 self.emit(.failed(EngineError.notReady.localizedDescription))
                 return
             }
+            let settings = self.activeSettings
             let recommended = self.audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov) as? [String: Any]
-            let fallbackAudio: [String: Any] = [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: 44_100.0,
-                AVNumberOfChannelsKey: 1,
-                AVEncoderBitRateKey: 128_000,
-            ]
-            do {
-                let directory = try TakeStorage.prepareDirectory()
-                let recorder = try DualRecorder(plan: plan,
-                                                settings: self.activeSettings,
-                                                audioSettings: recommended ?? fallbackAudio,
-                                                directory: directory,
-                                                baseName: TakeStorage.baseName())
-                self.recorder = recorder
-                self.lastReportedDuration = 0
-                self.emit(.recordingStarted)
-            } catch {
-                self.emit(.failed(error.localizedDescription))
+            self.isStartingRecorder = true
+            self.cancelWhenStarted = false
+
+            self.sessionQueue.async {
+                let fallbackAudio: [String: Any] = [
+                    AVFormatIDKey: kAudioFormatMPEG4AAC,
+                    AVSampleRateKey: 44_100.0,
+                    AVNumberOfChannelsKey: 1,
+                    AVEncoderBitRateKey: 128_000,
+                ]
+                let audioSettings: [String: Any]? = self.audioInput != nil ? (recommended ?? fallbackAudio) : nil
+                let result: Result<DualRecorder, Error>
+                do {
+                    let directory = try TakeStorage.prepareDirectory()
+                    let recorder = try DualRecorder(plan: plan,
+                                                    settings: settings,
+                                                    audioSettings: audioSettings,
+                                                    directory: directory,
+                                                    baseName: TakeStorage.baseName())
+                    result = .success(recorder)
+                } catch {
+                    result = .failure(error)
+                }
+
+                self.dataQueue.async {
+                    self.isStartingRecorder = false
+                    switch result {
+                    case .success(let recorder):
+                        if self.cancelWhenStarted {
+                            self.cancelWhenStarted = false
+                            recorder.cancel()
+                            self.emit(.recordingFinished(.failure(DualRecorder.RecorderError.nothingRecorded)))
+                            return
+                        }
+                        self.recorder = recorder
+                        self.lastReportedDuration = 0
+                        self.emit(.recordingStarted)
+                    case .failure(let error):
+                        self.cancelWhenStarted = false
+                        self.emit(.failed(error.localizedDescription))
+                    }
+                }
             }
         }
     }
 
     func stopRecording() {
         dataQueue.async {
+            if self.isStartingRecorder {
+                self.cancelWhenStarted = true
+                return
+            }
             guard let recorder = self.recorder else { return }
             self.recorder = nil
             self.applyPendingOrientation()
@@ -328,22 +418,26 @@ final class CaptureEngine: NSObject {
         }
     }
 
+    func cancelRecording() {
+        dataQueue.async {
+            if self.isStartingRecorder {
+                self.cancelWhenStarted = true
+                return
+            }
+            guard let recorder = self.recorder else { return }
+            self.recorder = nil
+            self.applyPendingOrientation()
+            recorder.cancel()
+            self.emit(.recordingFinished(.failure(DualRecorder.RecorderError.nothingRecorded)))
+        }
+    }
+
     /// dataQueue only.
     private func applyPendingOrientation() {
         if let pendingOrientation {
             orientation = pendingOrientation
             self.pendingOrientation = nil
             cachedPlan = nil
-        }
-    }
-
-    func cancelRecording() {
-        dataQueue.async {
-            guard let recorder = self.recorder else { return }
-            self.recorder = nil
-            self.applyPendingOrientation()
-            recorder.cancel()
-            self.emit(.recordingFinished(.failure(DualRecorder.RecorderError.nothingRecorded)))
         }
     }
 
@@ -380,7 +474,8 @@ final class CaptureEngine: NSObject {
         session.addInput(input)
         videoInput = input
         videoDevice = device
-        installRotationCoordinator(for: device)
+        isExposureFocusLocked = false
+        installObservers(for: device)
 
         if audioInput == nil,
            CameraAuthorization.status(for: .audio) == .authorized,
@@ -395,6 +490,9 @@ final class CaptureEngine: NSObject {
             guard session.canAddOutput(videoOutput) else { throw EngineError.cannotAddOutput }
             session.addOutput(videoOutput)
             videoOutput.alwaysDiscardsLateVideoFrames = true
+            // Full-resolution buffers, never preview-sized ones (order matters).
+            videoOutput.automaticallyConfiguresOutputBufferDimensions = false
+            videoOutput.deliversPreviewSizedOutputBuffers = false
             let preferred = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
             if videoOutput.availableVideoPixelFormatTypes.contains(preferred) {
                 videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: preferred]
@@ -418,7 +516,7 @@ final class CaptureEngine: NSObject {
         let candidates: [CaptureFormatCandidate] = device.formats.enumerated().map { index, format in
             let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
             let subtype = CMFormatDescriptionGetMediaSubType(format.formatDescription)
-            let maxRate = format.videoSupportedFrameRateRanges.map { $0.maxFrameRate }.max() ?? 0
+            let maxRate = format.videoSupportedFrameRateRanges.map { Double($0.maxFrameRate) }.max() ?? 0
             return CaptureFormatCandidate(index: index,
                                           width: Int(dimensions.width),
                                           height: Int(dimensions.height),
@@ -431,6 +529,10 @@ final class CaptureEngine: NSObject {
         var chosen = CaptureFormatSelector.select(from: candidates, requirements: requirements)
         if chosen == nil {
             requirements.targetFrameRate = 30
+            chosen = CaptureFormatSelector.select(from: candidates, requirements: requirements)
+        }
+        if chosen == nil {
+            requirements.quality = .hd1080
             chosen = CaptureFormatSelector.select(from: candidates, requirements: requirements)
         }
         if chosen == nil {
@@ -456,9 +558,11 @@ final class CaptureEngine: NSObject {
             device.activeColorSpace = .sRGB
         }
 
+        // Frame durations reset when the format changes, so set them afterwards and
+        // only to a value inside a supported range (anything else is an exception).
         let requestedRate = Double(settings.frameRate)
         let rate = min(requestedRate, chosen.maxFrameRate)
-        if format.videoSupportedFrameRateRanges.contains(where: { $0.minFrameRate <= rate && rate <= $0.maxFrameRate }) {
+        if format.videoSupportedFrameRateRanges.contains(where: { Double($0.minFrameRate) <= rate && rate <= Double($0.maxFrameRate) }) {
             let duration = CMTime(value: 1, timescale: CMTimeScale(rate.rounded()))
             device.activeVideoMinFrameDuration = duration
             device.activeVideoMaxFrameDuration = duration
@@ -483,7 +587,8 @@ final class CaptureEngine: NSObject {
 
         let plan = FramingPlanner.plan(sourceSize: chosen.portraitSize, pair: settings.pair, quality: settings.quality)
         formatPlan = plan
-        formatLabel = "\(chosen.width)x\(chosen.height) at \(Int(rate.rounded())) fps"
+        let upscaleNote = plan.maxScaleFactor > 1.001 ? String(format: ", %.2fx upscale", plan.maxScaleFactor) : ""
+        formatLabel = "\(chosen.width)x\(chosen.height) at \(Int(rate.rounded())) fps\(upscaleNote)"
         dataQueue.async {
             self.cachedPlan = plan
             self.processor.resetPools()
@@ -493,20 +598,24 @@ final class CaptureEngine: NSObject {
     /// Leaves buffers in the sensor's native orientation (rotation is done on
     /// the GPU in FrameProcessor) and records how to make them upright.
     private func configureVideoConnection() {
+        var connectionAngle = 0.0
         if let connection = videoOutput.connection(with: .video) {
             if connection.isVideoRotationAngleSupported(0) {
                 connection.videoRotationAngle = 0
             }
+            connectionAngle = Double(connection.videoRotationAngle)
             if connection.isVideoMirroringSupported {
                 connection.automaticallyAdjustsVideoMirroring = false
                 connection.isVideoMirrored = false
             }
-            if connection.isVideoStabilizationSupported {
-                connection.preferredVideoStabilizationMode = .standard
+            if connection.isVideoStabilizationSupported,
+               videoDevice?.activeFormat.isVideoStabilizationModeSupported(CaptureEngine.stabilizationMode) == true {
+                connection.preferredVideoStabilizationMode = CaptureEngine.stabilizationMode
             }
         }
+        let degrees = UprightTransform.normalize(Double(uprightRotationDegrees) - connectionAngle)
         let mirrored = position == .front && settings.mirrorFrontCamera
-        let transform = UprightTransform(rotationDegrees: uprightRotationDegrees, mirrored: mirrored)
+        let transform = UprightTransform(rotationDegrees: degrees, mirrored: mirrored)
         sessionTransform = transform
         let newOrientation = transform.imageOrientation
         dataQueue.async {
@@ -520,20 +629,34 @@ final class CaptureEngine: NSObject {
         }
     }
 
-    /// Asks AVFoundation how much the raw frames must be rotated to appear upright
-    /// in this portrait-locked UI. The answer depends on how the sensor is mounted
-    /// (e.g. the front camera on iPhone 17 Pro differs), so it is never hard-coded.
-    private func installRotationCoordinator(for device: AVCaptureDevice) {
-        // The coordinator watches a CALayer, so it is created and observed on the
-        // main queue. The `.initial` option reports the starting angle straight away.
+    /// Installs the rotation coordinator and the system-pressure observer for a
+    /// device. Both are created and observed on the main queue.
+    private func installObservers(for device: AVCaptureDevice) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+
+            // Rotation: ask AVFoundation how raw frames must be rotated to look
+            // upright in this portrait UI. The answer depends on how the sensor is
+            // mounted (the front camera on iPhone 17 Pro differs), so it is never
+            // hard-coded. Values only count while the preview layer is in a window.
             self.rotationObservation = nil
             let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: self.primaryPreview.layer)
             self.rotationCoordinator = coordinator
             self.rotationObservation = coordinator.observe(\.videoRotationAngleForHorizonLevelPreview, options: [.initial, .new]) { [weak self] coordinator, _ in
+                guard let self, self.primaryPreview.hostIsOnScreen else { return }
                 let degrees = UprightTransform.normalize(Double(coordinator.videoRotationAngleForHorizonLevelPreview))
-                self?.rotationAngleDidChange(to: degrees)
+                self.rotationAngleDidChange(to: degrees)
+            }
+            self.primaryPreview.onScreenChanged = { [weak self] onScreen in
+                guard onScreen, let self, let coordinator = self.rotationCoordinator else { return }
+                let degrees = UprightTransform.normalize(Double(coordinator.videoRotationAngleForHorizonLevelPreview))
+                self.rotationAngleDidChange(to: degrees)
+            }
+
+            // Pressure: back off before the system shuts the camera down.
+            self.pressureObservation = nil
+            self.pressureObservation = device.observe(\.systemPressureState, options: [.initial, .new]) { [weak self] device, _ in
+                self?.systemPressureDidChange(to: device.systemPressureState.level)
             }
         }
     }
@@ -545,6 +668,16 @@ final class CaptureEngine: NSObject {
             self.configureVideoConnection()
             self.emit(.transformChanged(self.sessionTransform))
         }
+    }
+
+    private func systemPressureDidChange(to level: AVCaptureDevice.SystemPressureState.Level) {
+        // Level is a string-backed struct, not Comparable: compare with == only.
+        let isCritical = level == .shutdown
+        let isSerious = level == .serious || level == .critical
+        if isCritical {
+            stopRecording()
+        }
+        emit(.pressureChanged(isSerious: isSerious || isCritical, isCritical: isCritical))
     }
 
     private func makeConfiguration() -> Configuration {
@@ -562,13 +695,7 @@ final class CaptureEngine: NSObject {
     }
 
     private static func discoverCamera(position: AVCaptureDevice.Position) -> AVCaptureDevice? {
-        let preferredTypes: [AVCaptureDevice.DeviceType]
-        switch position {
-        case .front:
-            preferredTypes = [.builtInWideAngleCamera]
-        default:
-            preferredTypes = [.builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera, .builtInWideAngleCamera]
-        }
+        let preferredTypes = position == .front ? frontCameraTypes : backCameraTypes
         let discovery = AVCaptureDevice.DiscoverySession(deviceTypes: preferredTypes, mediaType: .video, position: position)
         for type in preferredTypes {
             if let device = discovery.devices.first(where: { $0.deviceType == type }) {
@@ -668,6 +795,11 @@ final class CaptureEngine: NSObject {
         let uprightSize = PixelSize(width: Int(upright.extent.width.rounded()), height: Int(upright.extent.height.rounded()))
         let plan = resolvePlan(forUprightSize: uprightSize)
         let outputs = processor.render(upright: upright, plan: plan)
+        guard outputs.count == plan.outputs.count else {
+            // A pool hit its threshold: drop the frame for every output so the clips stay identical.
+            droppedFrameCount += 1
+            return
+        }
 
         if let primary = plan.primary, let rendered = outputs.first(where: { $0.framing == primary }) {
             primaryPreview.display(rendered.pixelBuffer, presentationTime: time)

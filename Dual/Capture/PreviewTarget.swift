@@ -11,6 +11,12 @@ final class PreviewTarget {
 
     let layer: AVSampleBufferDisplayLayer
 
+    /// Main thread. True while the hosting view is inside a window. The rotation
+    /// coordinator's preview angle is only meaningful for an on-screen layer.
+    var hostIsOnScreen = false
+    /// Main thread. Called by the host view when it enters or leaves a window.
+    var onScreenChanged: ((Bool) -> Void)?
+
     init() {
         layer = AVSampleBufferDisplayLayer()
         layer.videoGravity = .resizeAspectFill
@@ -20,7 +26,7 @@ final class PreviewTarget {
     /// Thread-safe: AVSampleBufferDisplayLayer accepts enqueues from any queue.
     func display(_ pixelBuffer: CVPixelBuffer, presentationTime: CMTime) {
         guard let sampleBuffer = PreviewTarget.makeSampleBuffer(from: pixelBuffer, presentationTime: presentationTime) else { return }
-        if layer.status == .failed {
+        if layer.status == .failed || layer.requiresFlushToResumeDecoding {
             layer.flush()
         }
         if layer.isReadyForMoreMediaData {

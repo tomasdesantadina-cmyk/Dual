@@ -59,7 +59,8 @@ final class ClipWriter {
 
         try? FileManager.default.removeItem(at: url)
         writer = try AVAssetWriter(outputURL: url, fileType: .mov)
-        writer.shouldOptimizeForNetworkUse = true
+        // Periodic fragments keep the file readable if the app dies mid-take.
+        writer.movieFragmentInterval = CMTime(seconds: 2, preferredTimescale: 600)
 
         var compression: [String: Any] = [
             AVVideoAverageBitRateKey: bitrate,

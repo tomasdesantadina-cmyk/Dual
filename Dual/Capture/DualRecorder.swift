@@ -79,7 +79,7 @@ final class DualRecorder {
         // Every writer needs a rendered frame for its framing.
         var matched: [(ClipWriter, CVPixelBuffer)] = []
         for writer in writers {
-            guard let rendered = outputs.first(where: { $0.framing == writer.framing }) else {
+            guard let rendered = outputs.first(where: { $0.framing.aspect == writer.framing.aspect }) else {
                 droppedVideoFrames += 1
                 return
             }
